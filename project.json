@@ -1,0 +1,93 @@
+{
+  "format": "cyoa-tool",
+  "version": 1,
+  "meta": {
+    "title": "용사 지원서 (하이브리드 데모)",
+    "author": "CYOA 툴",
+    "description": "서사 → 포인트 빌드 → 서사로 이어지는 하이브리드 CYOA 예시입니다.",
+    "lang": "ko"
+  },
+  "settings": {
+    "flow": "paged",
+    "startPageId": "h_intro",
+    "allowNegativeCurrency": false,
+    "showLockedChoices": true,
+    "enableBuildCode": true
+  },
+  "style": {
+    "bg": "#0e0f14",
+    "text": "#e9e9ef",
+    "accent": "#d8b25a",
+    "card": "#1a1b22",
+    "cardBorder": "#33343d",
+    "font": "system-ui",
+    "rowImageHeight": 200,
+    "maxWidth": 980,
+    "customCss": ""
+  },
+  "currencies": [
+    { "id": "pt", "name": "용사 포인트", "start": 60, "color": "#d8b25a", "allowNegative": false }
+  ],
+  "pages": [
+    {
+      "id": "h_intro",
+      "title": "프롤로그",
+      "type": "story",
+      "text": "<p>왕국이 용사를 모집한다. 길드 접수처의 직원이 당신에게 지원서를 내민다.</p><p>“<strong>60 포인트</strong> 안에서 장비와 능력을 정하세요. 준비가 되면 시작하시면 됩니다.”</p>",
+      "image": null,
+      "rows": [],
+      "links": [
+        { "label": "지원서를 작성한다", "target": "h_build", "requirements": [], "scores": [] }
+      ]
+    },
+    {
+      "id": "h_build",
+      "title": "지원서 작성",
+      "type": "build",
+      "text": "",
+      "image": null,
+      "rows": [
+        {
+          "id": "hr_weapon",
+          "title": "주무기",
+          "description": "하나를 선택하세요.",
+          "image": null,
+          "select": { "mode": "single", "min": 1, "max": 1 },
+          "columns": 3,
+          "choices": [
+            { "id": "hw_sword", "title": "검", "description": "균형 잡힌 근접 무기.", "image": null, "scores": [ { "currency": "pt", "value": -20 } ], "requirements": [] },
+            { "id": "hw_bow", "title": "활", "description": "원거리 공격.", "image": null, "scores": [ { "currency": "pt", "value": -20 } ], "requirements": [] },
+            { "id": "hw_staff", "title": "지팡이", "description": "마법사용. 마법 능력을 열어줍니다.", "image": null, "scores": [ { "currency": "pt", "value": -15 } ], "requirements": [] }
+          ]
+        },
+        {
+          "id": "hr_skill",
+          "title": "능력",
+          "description": "원하는 만큼 선택하세요(다중).",
+          "image": null,
+          "select": { "mode": "multi", "min": 0, "max": 2 },
+          "columns": 2,
+          "choices": [
+            { "id": "hs_guard", "title": "방어 태세", "description": "받는 피해 감소.", "image": null, "scores": [ { "currency": "pt", "value": -10 } ], "requirements": [] },
+            { "id": "hs_magic", "title": "원소 마법 (지팡이 필요)", "description": "지팡이를 골라야 열립니다.", "image": null, "scores": [ { "currency": "pt", "value": -15 } ], "requirements": [ { "kind": "choice", "id": "hw_staff", "mode": "selected" } ] }
+          ]
+        }
+      ],
+      "links": [
+        { "label": "제출한다", "target": "h_end", "requirements": [], "scores": [] },
+        { "label": "프롤로그로 돌아가기", "target": "h_intro", "requirements": [], "scores": [] }
+      ]
+    },
+    {
+      "id": "h_end",
+      "title": "출발",
+      "type": "story",
+      "text": "<p>접수처 직원이 지원서를 확인하고 고개를 끄덕인다.</p><p>“좋습니다. 당신의 모험을 시작하세요, 용사여.” <em>— 데모 끝 —</em></p>",
+      "image": null,
+      "rows": [],
+      "links": [
+        { "label": "지원서 다시 쓰기", "target": "h_build", "requirements": [], "scores": [] }
+      ]
+    }
+  ]
+}

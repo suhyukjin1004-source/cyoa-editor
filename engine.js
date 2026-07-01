@@ -1,0 +1,1301 @@
+/* ===========================================================
+   CYOA 공유 엔진 (engine.js)
+   - 데이터 모델 헬퍼, 요구조건 평가, 통화 계산
+   - HTML 새니타이저, 테마 주입
+   - 무대(stage) 렌더러: 뷰어 재생 + 에디터 미리보기/편집 공용
+   전역 window.CYOA 로 노출 (모듈 불필요 → file:// 및 단일파일 인라인에 안전).
+   =========================================================== */
+(function (global) {
+  "use strict";
+
+  /* ---------------- 기본 유틸 ---------------- */
+  function genId(prefix) {
+    return (prefix || "id") + "_" + Math.random().toString(36).slice(2, 8);
+  }
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  /* ---------------- HTML 새니타이저 (화이트리스트) ---------------- */
+  var ALLOWED = {
+    P: [], BR: [], STRONG: [], EM: [], B: [], I: [], U: [], S: [],
+    UL: [], OL: [], LI: [], H3: [], H4: [], BLOCKQUOTE: [], SPAN: [], HR: [], A: ["href"]
+  };
+  function cleanNode(node) {
+    var out = document.createElement(node.tagName || "DIV");
+    var kids = node.childNodes, i;
+    for (i = 0; i < kids.length; i++) {
+      var child = kids[i];
+      if (child.nodeType === 3) {
+        out.appendChild(document.createTextNode(child.nodeValue));
+      } else if (child.nodeType === 1) {
+        var tag = child.tagName;
+        if (ALLOWED[tag]) {
+          var el = document.createElement(tag);
+          ALLOWED[tag].forEach(function (attr) {
+            if (child.hasAttribute(attr)) {
+              var v = child.getAttribute(attr);
+              if (attr === "href" && !/^(https?:|#|mailto:)/i.test(v)) return;
+              el.setAttribute(attr, v);
+              if (tag === "A") { el.setAttribute("target", "_blank"); el.setAttribute("rel", "noopener noreferrer"); }
+            }
+          });
+          var inner = cleanNode(child);
+          el.innerHTML = inner.innerHTML;
+          out.appendChild(el);
+        } else {
+          // 허용되지 않은 태그: 내용만 보존
+          var innerU = cleanNode(child);
+          while (innerU.firstChild) out.appendChild(innerU.firstChild);
+        }
+      }
+    }
+    return out;
+  }
+  function sanitizeHtml(html) {
+    if (!html) return "";
+    var doc = new DOMParser().parseFromString("<div>" + html + "</div>", "text/html");
+    return cleanNode(doc.body.firstChild).innerHTML;
+  }
+  // 줄바꿈 자동 변환: 블록 태그가 없으면 엔터=<br>, 빈 줄=문단으로.
+  // (사용자가 <p> 등 블록 HTML을 직접 쓰면 그대로 둠 → 기존 방식과 호환)
+  function hasBlockTags(s) { return /<\s*(p|br|ul|ol|li|h3|h4|blockquote|hr|div)\b/i.test(s || ""); }
+  function formatRich(text, paragraphs) {
+    if (text == null) return "";
+    if (hasBlockTags(text)) return text;
+    var t = String(text);
+    if (paragraphs) {
+      return t.split(/\n{2,}/).map(function (b) {
+        b = b.replace(/\n/g, "<br>");
+        return b.trim() ? "<p>" + b + "</p>" : "";
+      }).join("");
+    }
+    return t.replace(/\n/g, "<br>");
+  }
+  // 동적 단어 해석: 첫 통과 rule.value, 없으면 default
+  function resolveWord(project, state, id) {
+    var w = (project.words || []).find(function (x) { return x.id === id; });
+    if (!w) return "";
+    var rules = w.rules || [];
+    for (var i = 0; i < rules.length; i++) {
+      if (evaluateRequirements(rules[i].requirements, project, state).ok) return rules[i].value;
+    }
+    return w.default || "";
+  }
+  // 인라인 조건 텍스트 {{if:조건}}…{{else}}…{{/if}} — 조건은 R1 요구조건 평가를 재사용.
+  // 조건 형식: choice:ID | !choice:ID | var:ID [OP N] | !var:ID | cur:ID [OP N]
+  function parseInlineReq(cond, project) {
+    var m = /^(choice|var|cur)\s*:\s*([^\s<>=!]+)\s*(>=|<=|==|!=|>|<)?\s*(-?\d+(?:\.\d+)?)?$/.exec(cond);
+    if (!m) return null;
+    var ns = m[1], id = m[2], op = m[3], val = m[4];
+    if (ns === "choice") return { kind: "choice", id: id, mode: "selected" };
+    if (ns === "cur") return op ? { kind: "currency", id: id, op: op, value: Number(val) } : { kind: "currency", id: id, op: "!=", value: 0 };
+    var def = variableDef(project, id);
+    if (op) return { kind: "var", id: id, op: op, value: Number(val) };
+    if (def && def.type === "flag") return { kind: "var", id: id, op: "isTrue" };
+    return { kind: "var", id: id, op: "!=", value: 0 }; // 수치: 0이 아니면 참
+  }
+  function evalInlineCond(cond, project, state) {
+    cond = (cond || "").trim();
+    var neg = false;
+    if (cond.charAt(0) === "!") { neg = true; cond = cond.slice(1).trim(); }
+    var req = parseInlineReq(cond, project);
+    var ok = req ? evaluateRequirements([req], project, state).ok : false;
+    return neg ? !ok : ok;
+  }
+  function resolveConditionals(text, project, state) {
+    var guard = 0;
+    while (guard++ < 2000) {
+      var open = text.indexOf("{{if:");
+      if (open === -1) break;
+      var condEnd = text.indexOf("}}", open);
+      if (condEnd === -1) break; // 깨진 토큰 — 그대로 둠
+      var cond = text.slice(open + 5, condEnd);
+      var i = condEnd + 2, depth = 1, elsePos = -1, closeStart = -1;
+      while (i < text.length) {
+        var nIf = text.indexOf("{{if:", i), nElse = text.indexOf("{{else}}", i), nEnd = text.indexOf("{{/if}}", i);
+        if (nEnd === -1) break; // 닫힘 없음
+        var next = nEnd, kind = "end";
+        if (nIf !== -1 && nIf < next) { next = nIf; kind = "if"; }
+        if (nElse !== -1 && nElse < next) { next = nElse; kind = "else"; }
+        if (kind === "if") { depth++; i = next + 5; }
+        else if (kind === "else") { if (depth === 1 && elsePos === -1) elsePos = next; i = next + 8; }
+        else { depth--; if (depth === 0) { closeStart = next; break; } i = next + 7; }
+      }
+      if (closeStart === -1) break; // 매칭 실패 — 무한루프 방지
+      var bodyStart = condEnd + 2, ifBody, elseBody;
+      if (elsePos !== -1) { ifBody = text.slice(bodyStart, elsePos); elseBody = text.slice(elsePos + 8, closeStart); }
+      else { ifBody = text.slice(bodyStart, closeStart); elseBody = ""; }
+      var chosen = evalInlineCond(cond, project, state) ? ifBody : elseBody;
+      text = text.slice(0, open) + chosen + text.slice(closeStart + 7);
+    }
+    return text;
+  }
+  // 본문 처리: {{if:…}} 조건 → {{cur:id}}/{{var:id}}/{{word:id}} 토큰 치환
+  function interpolate(text, project, state) {
+    if (text == null) return "";
+    text = resolveConditionals(String(text), project, state);
+    var totals = null, vars = null;
+    return text.replace(/\{\{\s*(cur|word|var)\s*:\s*([^}\s]+)\s*\}\}/g, function (m, kind, id) {
+      if (kind === "cur") { if (!totals) totals = computeCurrencies(project, state); var v = totals[id]; return (v == null ? 0 : v); }
+      if (kind === "var") { if (!vars) vars = computeVars(project, state); var vv = vars[id]; return vv === undefined ? "" : vv === true ? "예" : vv === false ? "아니오" : vv; }
+      return resolveWord(project, state, id);
+    });
+  }
+
+  /* ---------------- 데이터 헬퍼 ---------------- */
+  function findPage(project, id) {
+    return (project.pages || []).find(function (p) { return p.id === id; }) || null;
+  }
+  function eachRow(project, fn) {
+    (project.pages || []).forEach(function (pg) {
+      (pg.rows || []).forEach(function (r) { fn(r, pg); });
+    });
+  }
+  function allChoices(project) {
+    var out = [];
+    eachRow(project, function (r) { (r.choices || []).forEach(function (c) { out.push(c); }); });
+    return out;
+  }
+  // id→choice 맵을 1회 구성(반복 조회용). findChoice 전체 스캔을 반복하던 O(n²) 경로를 대체.
+  // findChoice/findRowOfChoice 와 동일하게 '첫' 항목 우선(중복 id가 있어도 동작 일치).
+  function buildChoiceMap(project) {
+    var m = {};
+    eachRow(project, function (r) { (r.choices || []).forEach(function (c) { if (!(c.id in m)) m[c.id] = c; }); });
+    return m;
+  }
+  function findChoice(project, id) {
+    return allChoices(project).find(function (c) { return c.id === id; }) || null;
+  }
+  function findRowOfChoice(project, id) {
+    var found = null;
+    eachRow(project, function (r) {
+      if ((r.choices || []).some(function (c) { return c.id === id; })) found = r;
+    });
+    return found;
+  }
+  function currencyDef(project, id) {
+    return (project.currencies || []).find(function (c) { return c.id === id; }) || null;
+  }
+  function variableDef(project, id) {
+    return (project.variables || []).find(function (v) { return v.id === id; }) || null;
+  }
+  function currencyAllowsNeg(project, id) {
+    var d = currencyDef(project, id);
+    return !!(project.settings && project.settings.allowNegativeCurrency) || !!(d && d.allowNegative);
+  }
+
+  /* ---------------- 상태 ---------------- */
+  function newState(project) {
+    return {
+      selected: [],            // 선택된 choice id 배열
+      counts: {},              // 다중 선택 카운트 { choiceId: n }
+      eventScores: {},         // 링크로 획득/소모한 통화 누적
+      varEvents: [],           // 링크가 1회성으로 남긴 변수 효과 로그(방문 순서대로 재생)
+      takenLinks: [],          // 1회성 점수/효과 중복 방지용 링크 키
+      currentPageId: (project.settings && project.settings.startPageId) || ((project.pages[0] || {}).id),
+      history: []
+    };
+  }
+  function isSelected(state, id) { return state.selected.indexOf(id) !== -1; }
+  function getCount(state, id) {
+    var n = state.counts ? state.counts[id] : undefined;
+    if (n != null) return n;
+    return isSelected(state, id) ? 1 : 0;
+  }
+  function isMulti(choice) { return !!(choice && choice.selectMultiple && choice.selectMultiple.enabled); }
+
+  /* ---------------- 통화 계산 ---------------- */
+  function computeCurrencies(project, state) {
+    var totals = {};
+    (project.currencies || []).forEach(function (c) {
+      totals[c.id] = (typeof c.start === "number" ? c.start : 0);
+    });
+    // 선택지 id→choice 맵을 한 번만 구성(선택마다 findChoice 전체 스캔하던 O(n²) 제거). 선택이 있을 때만 빌드.
+    var byId = null;
+    state.selected.forEach(function (cid) {
+      if (!byId) byId = buildChoiceMap(project);
+      var ch = byId[cid];
+      var cnt = getCount(state, cid) || 1;
+      if (ch && ch.scores) ch.scores.forEach(function (s) {
+        if (totals[s.currency] === undefined) totals[s.currency] = 0;
+        totals[s.currency] += (Number(s.value) || 0) * cnt;
+      });
+    });
+    Object.keys(state.eventScores || {}).forEach(function (cid) {
+      if (totals[cid] === undefined) totals[cid] = 0;
+      totals[cid] += Number(state.eventScores[cid]) || 0;
+    });
+    return totals;
+  }
+
+  /* ---------------- 변수(상태/깃발) 계산 ----------------
+     통화와 달리 예산 잠금이 없는 자유 상태. type: number | flag.
+     선언적(선택지 effects: 합산/OR, 되돌릴 수 있음) + 명령적(링크 varEvents: 순서대로) 조합. */
+  function applyVarEffect(out, def, e, cnt, declarative) {
+    if (!def) return;
+    if (def.type === "flag") {
+      if (e.op === "on") out[def.id] = true;
+      else if (e.op === "off" && !declarative) out[def.id] = false; // off(끄기)는 명령적(링크)만
+    } else {
+      var n = (Number(e.value) || 0) * (cnt || 1);
+      out[def.id] = (Number(out[def.id]) || 0) + (e.op === "sub" ? -n : n);
+    }
+  }
+  function computeVars(project, state) {
+    var out = {};
+    (project.variables || []).forEach(function (v) {
+      out[v.id] = (v.type === "flag") ? !!v.initial : (Number(v.initial) || 0);
+    });
+    // 1) 선언적: 선택된 choice의 effects (다중카운트만큼 곱)
+    var byId = null;
+    (state.selected || []).forEach(function (cid) {
+      if (!byId) byId = buildChoiceMap(project);
+      var ch = byId[cid]; if (!ch || !ch.effects) return;
+      var cnt = getCount(state, cid) || 1;
+      ch.effects.forEach(function (e) { applyVarEffect(out, variableDef(project, e.var), e, cnt, true); });
+    });
+    // 2) 명령적: 링크가 남긴 효과 로그(방문 순서대로 — off/덮어쓰기는 마지막 쓰기 우선)
+    (state.varEvents || []).forEach(function (e) { applyVarEffect(out, variableDef(project, e.var), e, 1, false); });
+    return out;
+  }
+
+  /* ---------------- 요구조건 평가 (배열 = AND) ---------------- */
+  function evaluateRequirements(reqs, project, state, totals) {
+    var reasons = [];
+    if (!reqs || !reqs.length) return { ok: true, reasons: reasons };
+    totals = totals || computeCurrencies(project, state);
+    var varsCache = null;
+    reqs.forEach(function (req) {
+      if (req.kind === "choice") {
+        var sel = isSelected(state, req.id);
+        var want = req.mode !== "notSelected";
+        if (sel !== want) {
+          var ch = findChoice(project, req.id);
+          var nm = ch ? ch.title : req.id;
+          reasons.push(want ? ("'" + nm + "' 선택 필요") : ("'" + nm + "' 선택 시 불가"));
+        }
+      } else if (req.kind === "currency") {
+        var v = totals[req.id];
+        if (v === undefined) v = 0;
+        var ok = compare(v, req.op, Number(req.value) || 0);
+        if (!ok) {
+          var cd = currencyDef(project, req.id);
+          reasons.push((cd ? cd.name : req.id) + " " + req.op + " " + req.value + " 필요");
+        }
+      } else if (req.kind === "oneOf") {
+        var ids = req.ids || [];
+        if (!ids.length) return; // 빈 그룹은 통과(무시)
+        var anySel = ids.some(function (id) { return isSelected(state, id); });
+        var wantSel = req.mode !== "notSelected";
+        if (wantSel ? !anySel : anySel) {
+          var names = ids.map(function (id) { var c = findChoice(project, id); return c ? c.title : id; });
+          reasons.push(wantSel ? ("'" + names.join(" / ") + "' 중 하나 선택 필요") : ("'" + names.join(" / ") + "' 모두 선택 안 함 필요"));
+        }
+      } else if (req.kind === "compare") {
+        var va = totals[req.a]; if (va === undefined) va = 0;
+        var vb = totals[req.b]; if (vb === undefined) vb = 0;
+        if (!compare(va, req.op, vb)) {
+          var ca = currencyDef(project, req.a), cb = currencyDef(project, req.b);
+          reasons.push((ca ? ca.name : req.a) + " " + req.op + " " + (cb ? cb.name : req.b) + " 필요");
+        }
+      } else if (req.kind === "var") {
+        if (!varsCache) varsCache = computeVars(project, state);
+        var vdef = variableDef(project, req.id);
+        var vval = varsCache[req.id];
+        if (vdef && vdef.type === "flag") {
+          var want = req.op !== "isFalse"; // 기본 isTrue
+          if (!!vval !== want) reasons.push("'" + (vdef ? vdef.name : req.id) + "' " + (want ? "필요" : "아님 필요"));
+        } else {
+          var nval = (vval === undefined ? 0 : Number(vval) || 0);
+          if (!compare(nval, req.op, Number(req.value) || 0)) {
+            reasons.push((vdef ? vdef.name : req.id) + " " + req.op + " " + req.value + " 필요");
+          }
+        }
+      }
+    });
+    return { ok: reasons.length === 0, reasons: reasons };
+  }
+  function compare(a, op, b) {
+    switch (op) {
+      case ">=": return a >= b;
+      case "<=": return a <= b;
+      case ">": return a > b;
+      case "<": return a < b;
+      case "==": return a === b;
+      case "!=": return a !== b;
+      default: return true;
+    }
+  }
+
+  /* ---------------- 선택지 상태 ---------------- */
+  function choiceStatus(project, choice, row, state, totals) {
+    totals = totals || computeCurrencies(project, state);
+    var selected = isSelected(state, choice.id);
+    var req = evaluateRequirements(choice.requirements, project, state, totals);
+    // 예산: 이 선택지를 새로 고르면 음수 불가 통화가 0 미만이 되는가?
+    var budgetReasons = [];
+    if (!selected && choice.scores) {
+      choice.scores.forEach(function (s) {
+        if (currencyAllowsNeg(project, s.currency)) return;
+        var after = (totals[s.currency] || 0) + (Number(s.value) || 0);
+        if (after < 0) {
+          var cd = currencyDef(project, s.currency);
+          budgetReasons.push((cd ? cd.name : s.currency) + " 부족");
+        }
+      });
+    }
+    var reasons = req.reasons.concat(budgetReasons);
+    var locked = !selected && reasons.length > 0;
+    // 숨김 판정: 선택지별 설정이 있으면 우선, 없으면 프로젝트 전역 설정을 따름
+    var globalHide = project.settings && project.settings.showLockedChoices === false;
+    var hideThis = choice.hideWhenLocked === true ? true
+      : choice.hideWhenLocked === false ? false : globalHide;
+    var hidden = locked && hideThis;
+    return { selected: selected, locked: locked, hidden: hidden, selectable: !locked, reasons: reasons };
+  }
+
+  /* ---------------- 선택 토글 ---------------- */
+  function countSelectedInRow(state, row) {
+    var n = 0;
+    (row.choices || []).forEach(function (c) { if (isSelected(state, c.id)) n++; });
+    return n;
+  }
+  function removeChoice(state, id) {
+    state.selected = state.selected.filter(function (x) { return x !== id; });
+    if (state.counts) delete state.counts[id];
+  }
+  function budgetOkForCount(project, state, choice, next) {
+    var totals = computeCurrencies(project, state);
+    var cur = getCount(state, choice.id), bad = false;
+    (choice.scores || []).forEach(function (s) {
+      if (currencyAllowsNeg(project, s.currency)) return;
+      var delta = (Number(s.value) || 0) * (next - cur);
+      if ((totals[s.currency] || 0) + delta < 0) bad = true;
+    });
+    return !bad;
+  }
+  // 확장 훅 "select" 발행(선택 변경 후 최종 상태 기준)
+  function emitSelect(project, state, choiceId) {
+    hooksEmit("select", { project: project, state: state, choiceId: choiceId, selected: isSelected(state, choiceId), count: getCount(state, choiceId) });
+  }
+  function toggleChoice(project, state, choiceId) {
+    var row = findRowOfChoice(project, choiceId);
+    var choice = findChoice(project, choiceId);
+    if (!row || !choice) return false;
+    if (isMulti(choice)) {
+      if (getCount(state, choiceId) > 0) { removeChoice(state, choiceId); pruneInvalid(project, state); emitSelect(project, state, choiceId); return true; }
+      return changeCount(project, state, choiceId, 1);
+    }
+    if (isSelected(state, choiceId)) {
+      removeChoice(state, choiceId);
+    } else {
+      var st = choiceStatus(project, choice, row, state);
+      if (!st.selectable) return false;
+      var mode = (row.select && row.select.mode) || "multi";
+      if (mode === "single") {
+        (row.choices || []).forEach(function (c) { removeChoice(state, c.id); });
+      } else {
+        var max = row.select && row.select.max;
+        if (max && countSelectedInRow(state, row) >= max) return false;
+      }
+      state.selected.push(choiceId);
+    }
+    pruneInvalid(project, state);
+    emitSelect(project, state, choiceId);
+    return true;
+  }
+  // 다중 선택지 카운트 증감
+  function changeCount(project, state, choiceId, delta) {
+    var row = findRowOfChoice(project, choiceId);
+    var choice = findChoice(project, choiceId);
+    if (!row || !choice) return false;
+    if (!state.counts) state.counts = {};
+    var sm = choice.selectMultiple || {};
+    var min = Number(sm.min) || 0, max = Number(sm.max) || 0; // max 0 = 무제한
+    var cur = getCount(state, choiceId), next;
+    if (delta > 0) {
+      if (cur === 0) {
+        var st = choiceStatus(project, choice, row, state);
+        if (!st.selectable) return false;
+        var smode = (row.select && row.select.mode) || "multi";
+        if (smode === "single") { (row.choices || []).forEach(function (c) { removeChoice(state, c.id); }); }
+        else { var rmax = row.select && row.select.max; if (rmax && countSelectedInRow(state, row) >= rmax) return false; }
+        next = Math.max(1, min);
+      } else { next = cur + 1; if (max && next > max) return false; }
+      if (!budgetOkForCount(project, state, choice, next)) return false;
+      state.counts[choiceId] = next;
+      if (!isSelected(state, choiceId)) state.selected.push(choiceId);
+    } else {
+      if (cur <= 0) return false;
+      next = (cur - 1 < min) ? 0 : cur - 1;
+      if (next <= 0) removeChoice(state, choiceId);
+      else state.counts[choiceId] = next;
+    }
+    pruneInvalid(project, state);
+    emitSelect(project, state, choiceId);
+    return true;
+  }
+  // 재계산: 자동 활성/해제(forced) + 요구조건 깨진 선택 연쇄 해제. 안정점까지 반복.
+  function pruneInvalid(project, state) {
+    if (!state.counts) state.counts = {};
+    var byId = buildChoiceMap(project);   // 구조는 루프 중 바뀌지 않으므로 1회만 구성
+    var changed = true, guard = 0;
+    while (changed && guard < 100) {
+      changed = false; guard++;
+      // 1) forced 집합(선택된 choice가 activates 하는 id)
+      var forced = {};
+      state.selected.slice().forEach(function (cid) {
+        var ch = byId[cid]; if (!ch) return;
+        (ch.activates || []).forEach(function (id) { forced[id] = true; });
+      });
+      // 2) 자동 해제(deactivates) → 자동 선택(activates)
+      state.selected.slice().forEach(function (cid) {
+        var ch = byId[cid]; if (!ch) return;
+        (ch.deactivates || []).forEach(function (id) {
+          if (isSelected(state, id) && !forced[id]) { removeChoice(state, id); changed = true; }
+        });
+        (ch.activates || []).forEach(function (id) {
+          if (byId[id] && !isSelected(state, id)) {
+            state.selected.push(id); state.counts[id] = state.counts[id] || 1; changed = true;
+          }
+        });
+      });
+      // 3) 요구조건 깨진 선택 해제 (forced 는 유지)
+      var totals = computeCurrencies(project, state);
+      state.selected.slice().forEach(function (cid) {
+        if (forced[cid]) return;
+        var ch = byId[cid];
+        if (!ch) { removeChoice(state, cid); changed = true; return; }
+        var r = evaluateRequirements(ch.requirements, project, state, totals);
+        if (!r.ok) { removeChoice(state, cid); changed = true; }
+      });
+    }
+  }
+
+  /* ---------------- 페이지 이동 ---------------- */
+  function navigate(project, state, link) {
+    var req = evaluateRequirements(link.requirements, project, state);
+    if (!req.ok) return false;
+    var from = state.currentPageId;
+    var key = from + "->" + link.target + "#" + (link.label || "");
+    state.history.push(from);
+    state.currentPageId = link.target;
+    var hasOnce = (link.scores && link.scores.length) || (link.effects && link.effects.length);
+    if (hasOnce && state.takenLinks.indexOf(key) === -1) {
+      state.takenLinks.push(key);
+      (link.scores || []).forEach(function (s) {
+        state.eventScores[s.currency] = (state.eventScores[s.currency] || 0) + (Number(s.value) || 0);
+      });
+      if (!state.varEvents) state.varEvents = [];
+      (link.effects || []).forEach(function (e) { state.varEvents.push({ var: e.var, op: e.op, value: e.value }); });
+    }
+    hooksEmit("navigate", { project: project, state: state, link: link, from: from, to: link.target });
+    return true;
+  }
+  function goBack(state) {
+    if (!state.history.length) return false;
+    state.currentPageId = state.history.pop();
+    return true;
+  }
+
+  /* ---------------- 배경 음악(BGM) 판정 ----------------
+     반환 { action:"play"|"stop"|"keep", src } — 호스트(뷰어/에디터)가 오디오를 제어 */
+  function pageAudio(project, state) {
+    var flow = project.settings && project.settings.flow;
+    if (flow === "scroll") {
+      // 스크롤형: 처음으로 bgm이 지정된 페이지의 곡을 전체 배경으로
+      var src = null;
+      (project.pages || []).some(function (p) { if (p.bgm && !p.bgmStop) { src = p.bgm; return true; } return false; });
+      return src ? { action: "play", src: src } : { action: "keep" };
+    }
+    var pg = findPage(project, state.currentPageId) || (project.pages || [])[0];
+    if (!pg) return { action: "keep" };
+    if (pg.bgmStop) return { action: "stop" };
+    if (pg.bgm) return { action: "play", src: pg.bgm };
+    return { action: "keep" };   // 음악 미지정 페이지 → 이전 곡 계속
+  }
+
+  /* ---------------- 테마 ---------------- */
+  function pick(v, allowed, fallback) {
+    return allowed.indexOf(v) >= 0 ? v : fallback;
+  }
+  function transitionMs(speed) {
+    if (speed === "fast") return 180;
+    if (speed === "slow") return 520;
+    return 320;
+  }
+  function normalizeStyle(style) {
+    var S = style || {};
+    var out = {};
+    Object.keys(S).forEach(function (k) { out[k] = S[k]; });
+    if (out.bg == null) out.bg = "#0e0f14";
+    if (out.text == null) out.text = "#e9e9ef";
+    if (out.accent == null) out.accent = "#d8b25a";
+    if (out.card == null) out.card = "#1a1b22";
+    if (out.cardBorder == null) out.cardBorder = "#33343d";
+    if (out.font == null) out.font = "system-ui";
+    out.maxWidth = clampNum(out.maxWidth, 560, 1800, 980);
+    out.rowImageHeight = clampNum(out.rowImageHeight, 80, 720, 200);
+    out.layoutPreset = pick(out.layoutPreset, ["default", "wide", "card", "compact"], "default");
+    out.choicePreset = pick(out.choicePreset, ["card", "button", "list"], "card");
+    out.pageTransition = pick(out.pageTransition, ["none", "fade", "slide", "zoom"], "none");
+    out.transitionSpeed = pick(out.transitionSpeed, ["fast", "normal", "slow"], "normal");
+    if (out.customCss == null) out.customCss = "";
+    return out;
+  }
+  function layoutMaxWidth(style) {
+    var base = Number(style.maxWidth) || 980;
+    if (style.layoutPreset === "wide") return Math.max(base, 1220);
+    if (style.layoutPreset === "card") return Math.min(base, 900);
+    if (style.layoutPreset === "compact") return Math.min(base, 760);
+    return base;
+  }
+  function applyTheme(style, rootEl) {
+    style = normalizeStyle(style);
+    var r = (rootEl || document.documentElement).style;
+    if (style.bg) r.setProperty("--bg", style.bg);
+    if (style.text) r.setProperty("--text", style.text);
+    if (style.accent) r.setProperty("--accent", style.accent);
+    if (style.card) r.setProperty("--card", style.card);
+    if (style.cardBorder) r.setProperty("--card-border", style.cardBorder);
+    if (style.font) r.setProperty("--font", style.font);
+    if (style.maxWidth) r.setProperty("--max-width", style.maxWidth + "px");
+    r.setProperty("--layout-max-width", layoutMaxWidth(style) + "px");
+    if (style.rowImageHeight) r.setProperty("--row-img-height", style.rowImageHeight + "px");
+    r.setProperty("--page-transition-duration", transitionMs(style.transitionSpeed) + "ms");
+    var root = rootEl || document.documentElement;
+    if (root.dataset) {
+      root.dataset.layoutPreset = style.layoutPreset;
+      root.dataset.choicePreset = style.choicePreset;
+      root.dataset.pageTransition = style.pageTransition;
+      root.dataset.transitionSpeed = style.transitionSpeed;
+    }
+    var sEl = document.getElementById("cyoa-custom-css");
+    if (!sEl) { sEl = document.createElement("style"); sEl.id = "cyoa-custom-css"; document.head.appendChild(sEl); }
+    sEl.textContent = style.customCss || "";
+  }
+
+  /* ---------------- 확장 훅 버스 (숙련자용 customJs) ----------------
+     작성자 코드가 api.on("render", fn) 등으로 라이프사이클에 끼어들 수 있게 함.
+     훅은 play 모드 렌더에서만 발행 → 에디터 편집 캔버스(edit)는 영향 없음.
+     모든 콜백은 try/catch로 격리 → 한 훅이 실패해도 화면이 깨지지 않음. */
+  var _hooks = {};            // { name: [fn, ...] }
+  var _customJsRan = false;   // 프로젝트 로드당 1회 실행 가드
+  function hooksOn(name, fn) { if (typeof fn === "function") (_hooks[name] || (_hooks[name] = [])).push(fn); }
+  function hooksEmit(name, payload) {
+    var fns = _hooks[name]; if (!fns) return;
+    for (var i = 0; i < fns.length; i++) {
+      try { fns[i](payload); }
+      catch (e) { if (global.console) global.console.error("[CYOA hook:" + name + "]", e); }
+    }
+  }
+  function resetHooks() { _hooks = {}; _customJsRan = false; }
+  // 작성자 정의 스크립트 실행(프로젝트당 1회). new Function 으로 전역 스코프 격리, eval 미사용.
+  function runCustomJs(project, opts) {
+    opts = opts || {};
+    if (_customJsRan) return false;
+    var code = project && project.customJs;
+    if (!code || !String(code).trim()) return false;
+    _customJsRan = true;
+    var api = { on: hooksOn, CYOA: global.CYOA, project: project };
+    try {
+      var fn = new Function("CYOA", "project", "api", '"use strict";\n' + String(code));
+      fn(global.CYOA, project, api);
+      return true;
+    } catch (e) {
+      if (global.console) global.console.error("[CYOA customJs]", e);
+      if (opts.onError) opts.onError(e);
+      return false;
+    }
+  }
+
+  /* ---------------- 렌더 ---------------- */
+  function el(tag, cls, html) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function scoreTagsHTML(project, scores) {
+    if (!scores || !scores.length) return "";
+    return scores.map(function (s) {
+      var cd = currencyDef(project, s.currency);
+      var nm = cd ? cd.name : s.currency;
+      var v = Number(s.value) || 0;
+      if (v === 0) return '<span class="score-tag">' + escapeHtml(nm) + ' 0</span>';
+      var cls = v > 0 ? "gain" : "cost";
+      return '<span class="score-tag ' + cls + '">' + escapeHtml(nm) + " " + (v > 0 ? "+" : "") + v + "</span>";
+    }).join("");
+  }
+  function currencyBadgesHTML(project, state) {
+    var totals = computeCurrencies(project, state);
+    return (project.currencies || []).map(function (c) {
+      var v = totals[c.id] || 0;
+      var over = !currencyAllowsNeg(project, c.id) && v < 0;
+      return '<span class="currency-badge ' + (over ? "over" : "") + '">' +
+        '<span class="cur-name">' + escapeHtml(c.name) + '</span>' +
+        '<span class="cur-val" style="color:' + (c.color || "var(--accent)") + '">' + v + '</span></span>';
+    }).join("");
+  }
+
+  // 이미지 + 콘텐츠를 layout(위치/너비/높이)에 따라 배치
+  function clampNum(v, min, max, fallback) {
+    v = Number(v);
+    if (!isFinite(v)) v = fallback;
+    return Math.max(min, Math.min(max, v));
+  }
+  function defaultBlockLayout(kind, pos) {
+    pos = pos || "top";
+    return {
+      imagePos: pos,
+      imageWidth: (kind === "choice" || pos === "left" || pos === "right") ? 40 : 100,
+      imageHeight: 0,
+      imageGap: (pos === "left" || pos === "right") ? 16 : 8,
+      imageAlign: "center",
+      textWidth: 100,
+      textBoxAlign: "center",
+      textAlign: "left",
+      blockGap: kind === "row" ? 10 : 6
+    };
+  }
+  function normalizeBlockLayout(layout, kind) {
+    var L = layout || {};
+    var pos = (L.imagePos === "bottom" || L.imagePos === "left" || L.imagePos === "right") ? L.imagePos : "top";
+    var d = defaultBlockLayout(kind, pos);
+    var align = (L.imageAlign === "left" || L.imageAlign === "right" || L.imageAlign === "center") ? L.imageAlign : d.imageAlign;
+    var textBoxAlign = (L.textBoxAlign === "left" || L.textBoxAlign === "right" || L.textBoxAlign === "center") ? L.textBoxAlign : d.textBoxAlign;
+    var textAlign = (L.textAlign === "left" || L.textAlign === "right" || L.textAlign === "center") ? L.textAlign : d.textAlign;
+    return {
+      imagePos: pos,
+      imageWidth: clampNum(L.imageWidth, 5, 100, d.imageWidth),
+      imageHeight: clampNum(L.imageHeight, 0, 2000, d.imageHeight),
+      imageGap: clampNum(L.imageGap, 0, 160, d.imageGap),
+      imageAlign: align,
+      textWidth: clampNum(L.textWidth, 20, 100, d.textWidth),
+      textBoxAlign: textBoxAlign,
+      textAlign: textAlign,
+      blockGap: clampNum(L.blockGap, 0, 180, d.blockGap)
+    };
+  }
+  function imageEl(src, layout) {
+    var img = el("img", "el-img");
+    img.src = src; img.alt = ""; img.loading = "lazy";
+    var h = Number((layout || {}).imageHeight) || 0;
+    if (h > 0) { img.style.height = h + "px"; img.style.objectFit = "cover"; }
+    return img;
+  }
+  function alignMargins(align) {
+    if (align === "left") return { left: "0", right: "auto" };
+    if (align === "right") return { left: "auto", right: "0" };
+    return { left: "auto", right: "auto" };
+  }
+  function applyTextBoxLayout(contentEl, layout, sideBySide) {
+    if (!contentEl) return;
+    contentEl.classList.add("layout-text-box");
+    contentEl.style.textAlign = layout.textAlign || "left";
+    if (sideBySide) {
+      contentEl.style.width = "";
+      contentEl.style.marginLeft = "";
+      contentEl.style.marginRight = "";
+      return;
+    }
+    var m = alignMargins(layout.textBoxAlign);
+    contentEl.style.width = layout.textWidth + "%";
+    contentEl.style.marginLeft = m.left;
+    contentEl.style.marginRight = m.right;
+  }
+  function arrangeImage(src, contentEl, layout, kind) {
+    var L = normalizeBlockLayout(layout, kind || "page");
+    if (!src) {
+      applyTextBoxLayout(contentEl, L, false);
+      return contentEl || null;
+    }
+    var pos = L.imagePos || "top";
+    var w = Number(L.imageWidth);
+    if (!w && w !== 0) w = (pos === "left" || pos === "right") ? 45 : 100;
+    var iw = el("div", "img-wrap");
+    iw.appendChild(imageEl(src, L));
+    iw.style.margin = "0";
+    if (pos === "left" || pos === "right") {
+      var boxR = el("div", "lay lay-row");
+      boxR.style.gap = L.imageGap + "px";
+      iw.style.flex = "0 0 " + w + "%"; iw.style.maxWidth = w + "%";
+      if (contentEl) { contentEl.classList.add("lay-content"); applyTextBoxLayout(contentEl, L, true); }
+      if (pos === "left") { boxR.appendChild(iw); if (contentEl) boxR.appendChild(contentEl); }
+      else { if (contentEl) boxR.appendChild(contentEl); boxR.appendChild(iw); }
+      return boxR;
+    }
+    var boxC = el("div", "lay lay-col");
+    var m = alignMargins(L.imageAlign);
+    boxC.style.gap = L.imageGap + "px";
+    iw.style.width = w + "%"; iw.style.marginLeft = m.left; iw.style.marginRight = m.right;
+    applyTextBoxLayout(contentEl, L, false);
+    if (pos === "bottom") { if (contentEl) boxC.appendChild(contentEl); boxC.appendChild(iw); }
+    else { boxC.appendChild(iw); if (contentEl) boxC.appendChild(contentEl); }
+    return boxC;
+  }
+
+  function renderChoice(project, choice, row, state, opts, totals) {
+    var st = choiceStatus(project, choice, row, state, totals);
+    if (st.hidden && opts.mode === "play") return null;
+    var multi = isMulti(choice);
+    var node = el("div", "choice");
+    if (opts.mode === "edit") node.dataset.choiceId = choice.id;
+    if (st.selected) node.classList.add("selected");
+    if (st.locked) node.classList.add("locked");
+    if (opts.mode === "edit" && opts.editSelectedId === choice.id) node.classList.add("editing");
+    // 편집 모드: 조건부 숨김 선택지에 표식
+    if (opts.mode === "edit" && choice.hideWhenLocked === true) {
+      node.classList.add("hide-flag");
+      node.appendChild(el("span", "hide-badge", "🙈 숨김"));
+    }
+
+    var body = el("div", "choice-body");
+    body.appendChild(el("div", "choice-title", escapeHtml(choice.title || "(제목 없음)")));
+    if (choice.description) body.appendChild(el("div", "choice-desc", sanitizeHtml(formatRich(interpolate(choice.description, project, state), false))));
+    var sc = scoreTagsHTML(project, choice.scores);
+    if (sc) body.appendChild(el("div", "choice-scores", sc));
+    if (st.locked && st.reasons.length) body.appendChild(el("div", "lock-reason", escapeHtml(st.reasons.join(", "))));
+    if (multi) {
+      if (opts.mode === "play") {
+        var cnt = getCount(state, choice.id);
+        var stp = el("div", "choice-stepper");
+        var minus = el("button", "btn btn-sm", "−");
+        minus.disabled = cnt <= 0;
+        var num = el("span", "stepper-num", String(cnt));
+        var plus = el("button", "btn btn-sm", "＋");
+        minus.addEventListener("click", function (e) { e.stopPropagation(); if (opts.onCount) opts.onCount(choice.id, -1); });
+        plus.addEventListener("click", function (e) { e.stopPropagation(); if (opts.onCount) opts.onCount(choice.id, 1); });
+        stp.appendChild(minus); stp.appendChild(num); stp.appendChild(plus);
+        body.appendChild(stp);
+      } else {
+        body.appendChild(el("div", "choice-multi-note", "🔁 여러 번 선택 가능"));
+      }
+    }
+    // 애드온: 조건부 추가 텍스트
+    (choice.addons || []).forEach(function (ad) {
+      var show;
+      if (opts.mode === "edit") show = true; // 편집 모드에선 항상 표시
+      else if (ad.requirements && ad.requirements.length) show = evaluateRequirements(ad.requirements, project, state, totals).ok;
+      else show = st.selected; // 요구조건 없으면 선택 시 표시
+      if (show) body.appendChild(el("div", "choice-addon", sanitizeHtml(formatRich(interpolate(ad.text, project, state), false))));
+    });
+
+    if (choice.image) {
+      var L = choice.layout || {};
+      var pos = L.imagePos || "top";
+      node.classList.add("ci-" + pos);
+      var im = el("img", "choice-img"); im.src = choice.image; im.alt = choice.title || ""; im.loading = "lazy";
+      var h = Number(L.imageHeight) || 0;
+      if (h > 0) im.style.height = h + "px";
+      if (pos === "left" || pos === "right") {
+        var w = Number(L.imageWidth) || 40;
+        im.style.flex = "0 0 " + w + "%"; im.style.width = w + "%";
+      }
+      if (pos === "bottom" || pos === "right") { node.appendChild(body); node.appendChild(im); }
+      else { node.appendChild(im); node.appendChild(body); }
+    } else {
+      node.appendChild(body);
+    }
+
+    node.addEventListener("click", function () {
+      if (opts.mode === "edit") { if (opts.onEditSelect) opts.onEditSelect("choice", choice.id); return; }
+      if (st.locked) return;
+      if (multi) return; // 다중 선택지는 스테퍼(− N +)로만 조작
+      if (opts.onToggle) opts.onToggle(choice.id);
+    });
+    return node;
+  }
+
+  function renderRow(project, row, state, opts, totals) {
+    if (!totals) totals = computeCurrencies(project, state);
+    var node = el("div", "cyoa-row");
+    node.dataset.rowId = row.id;
+    var L = normalizeBlockLayout(row.layout, "row");
+    node.style.setProperty("--block-gap", L.blockGap + "px");
+    if (opts.mode === "edit" && opts.editSelectedId === row.id) node.classList.add("editing");
+    var head = el("div", "row-head");
+    head.appendChild(el("h3", "row-title", escapeHtml(row.title || "(행)")));
+    if (row.description) head.appendChild(el("p", "row-desc", sanitizeHtml(formatRich(interpolate(row.description, project, state), false))));
+    if (opts.mode === "edit") {
+      node.addEventListener("click", function (e) {
+        if (!e.target.closest(".choice")) {
+          e.stopPropagation();
+          if (opts.onEditSelect) opts.onEditSelect("row", row.id);
+        }
+      });
+    }
+    node.appendChild(arrangeImage(row.image, head, row.layout, "row"));
+    var grid = el("div", "choice-grid");
+    grid.style.setProperty("--cols", row.columns || 3);
+    (row.choices || []).forEach(function (ch) {
+      var c = renderChoice(project, ch, row, state, opts, totals);
+      if (c) grid.appendChild(c);
+    });
+    node.appendChild(grid);
+    return node;
+  }
+
+  function renderLinks(project, page, state, opts) {
+    if (!page.links || !page.links.length) return null;
+    var wrap = el("div", "cyoa-links");
+    var shown = 0;
+    page.links.forEach(function (link) {
+      var st = evaluateRequirements(link.requirements, project, state);
+      var hidden = link.hideWhenLocked === true && !st.ok;
+      if (hidden && opts.mode === "play") return; // 조건 미충족 → 숨김
+      shown++;
+      var cls = "btn nav-link" + (st.ok ? "" : " locked");
+      if (opts.mode === "edit" && link.hideWhenLocked === true) cls += " nav-hide-flag";
+      var b = el("button", cls);
+      if (opts.mode === "edit") b.dataset.linkUid = link._uid || "";
+      b.textContent = (opts.mode === "edit" && link.hideWhenLocked === true ? "🙈 " : "") + (link.label || "→");
+      if (!st.ok && st.reasons.length) b.title = st.reasons.join(", ");
+      b.addEventListener("click", function () {
+        if (opts.mode === "edit") return;
+        if (project.settings && project.settings.flow === "scroll") {
+          var t = document.getElementById("page-" + link.target);
+          if (t) t.scrollIntoView({ behavior: "smooth", block: "start" });
+          return;
+        }
+        if (!st.ok) return;
+        if (opts.onNavigate) opts.onNavigate(link);
+      });
+      wrap.appendChild(b);
+    });
+    return shown ? wrap : null;
+  }
+
+  function renderPage(project, page, state, opts) {
+    var sec = el("section", "cyoa-page");
+    sec.dataset.pageId = page.id;
+    var L = normalizeBlockLayout(page.layout, "page");
+    sec.style.setProperty("--block-gap", L.blockGap + "px");
+    sec.id = "page-" + page.id;
+    if (opts.mode === "edit" && opts.editSelectedId === page.id) sec.classList.add("editing");
+    if (opts.mode === "edit") {
+      sec.addEventListener("click", function (e) {
+        if (e.target.closest(".cyoa-row, .choice, .nav-link, .layout-drag-handle, .layout-gap-handle")) return;
+        if (opts.onEditSelect) opts.onEditSelect("page", page.id);
+      });
+    }
+    sec.appendChild(el("h2", "page-title", escapeHtml(page.title || "(페이지)")));
+    var storyEl = (page.type === "story" && page.text) ? el("div", "story-text", sanitizeHtml(formatRich(interpolate(page.text, project, state), true))) : null;
+    if (page.image || storyEl) {
+      var block = arrangeImage(page.image, storyEl, page.layout, "page");
+      if (block) sec.appendChild(block);
+    }
+    // 행(선택지 묶음)은 서사/빌드 페이지 모두에서 렌더 — 서사 페이지는 본문 아래에 선택지가 붙는다.
+    // 통화 합계는 페이지당 1회만 계산해 모든 행·선택지에 전달(선택지마다 재계산하던 비용 제거).
+    // 행이 없는(본문만 있는) 서사 페이지에서는 계산을 건너뛴다.
+    var pageTotals = (page.rows && page.rows.length) ? computeCurrencies(project, state) : null;
+    (page.rows || []).forEach(function (r) { sec.appendChild(renderRow(project, r, state, opts, pageTotals)); });
+    var links = renderLinks(project, page, state, opts);
+    if (links) sec.appendChild(links);
+    return sec;
+  }
+
+  function defaultStartLayout() {
+    return {
+      cardX: 50, cardY: 50, cardWidth: 620,
+      paddingX: 30, paddingY: 40,
+      align: "center",
+      gapImageTitle: 22, gapTitleSubtitle: 6, gapSubtitleText: 18,
+      gapTextActions: 26, gapActionsHint: 16,
+      preset: "center"
+    };
+  }
+  function normalizeStartLayout(layout) {
+    var d = defaultStartLayout(), L = layout || {}, out = {};
+    out.cardX = clampNum(L.cardX, 5, 95, d.cardX);
+    out.cardY = clampNum(L.cardY, 5, 95, d.cardY);
+    out.cardWidth = clampNum(L.cardWidth, 320, 1200, d.cardWidth);
+    out.paddingX = clampNum(L.paddingX, 0, 120, d.paddingX);
+    out.paddingY = clampNum(L.paddingY, 0, 140, d.paddingY);
+    out.align = (L.align === "left" || L.align === "right" || L.align === "center") ? L.align : d.align;
+    out.gapImageTitle = clampNum(L.gapImageTitle, 0, 140, d.gapImageTitle);
+    out.gapTitleSubtitle = clampNum(L.gapTitleSubtitle, 0, 120, d.gapTitleSubtitle);
+    out.gapSubtitleText = clampNum(L.gapSubtitleText, 0, 140, d.gapSubtitleText);
+    out.gapTextActions = clampNum(L.gapTextActions, 0, 160, d.gapTextActions);
+    out.gapActionsHint = clampNum(L.gapActionsHint, 0, 120, d.gapActionsHint);
+    out.preset = L.preset || d.preset;
+    out.free = !!L.free;
+    out.items = sanitizeStartItems(L.items);
+    return out;
+  }
+  function sanitizeStartItems(items) {
+    var out = {};
+    if (!items || typeof items !== "object") return out;
+    ["image", "title", "subtitle", "text", "actions", "hint"].forEach(function (k) {
+      var it = items[k];
+      if (!it || typeof it !== "object") return;
+      var o = {};
+      if (it.x != null) o.x = clampNum(it.x, 0, 100, 0);
+      if (it.y != null) o.y = clampNum(it.y, 0, 100, 0);
+      if (it.w != null) o.w = clampNum(it.w, 5, 100, 40);
+      if (it.align === "left" || it.align === "center" || it.align === "right") o.align = it.align;
+      out[k] = o;
+    });
+    return out;
+  }
+  function applyStartLayout(screen, card, layout) {
+    var L = normalizeStartLayout(layout);
+    var justify = L.align === "left" ? "flex-start" : L.align === "right" ? "flex-end" : "center";
+    screen.style.setProperty("--start-card-x", L.cardX + "%");
+    screen.style.setProperty("--start-card-y", L.cardY + "%");
+    screen.style.setProperty("--start-card-width", L.cardWidth + "px");
+    screen.style.setProperty("--start-padding-x", L.paddingX + "px");
+    screen.style.setProperty("--start-padding-y", L.paddingY + "px");
+    screen.style.setProperty("--start-align", L.align);
+    screen.style.setProperty("--start-actions-justify", justify);
+    screen.style.setProperty("--start-gap-image-title", L.gapImageTitle + "px");
+    screen.style.setProperty("--start-gap-title-subtitle", L.gapTitleSubtitle + "px");
+    screen.style.setProperty("--start-gap-subtitle-text", L.gapSubtitleText + "px");
+    screen.style.setProperty("--start-gap-text-actions", L.gapTextActions + "px");
+    screen.style.setProperty("--start-gap-actions-hint", L.gapActionsHint + "px");
+    card.style.textAlign = L.align;
+    return L;
+  }
+
+  // 오프닝(시작) 화면 렌더 — 뷰어/에디터 미리보기 공용
+  // opts: { mode:"play"|"preview", hasSaved, onStart, onResume, onNew, hint }
+  function renderStartScreen(project, mountEl, opts) {
+    opts = opts || {};
+    var st = project.start || {};
+    var meta = project.meta || {};
+    var layout = normalizeStartLayout(st.layout);
+    applyTheme(project.style, document.documentElement);
+    mountEl.innerHTML = "";
+    var screen = el("div", "start-screen" + (opts.inline ? " start-inline" : ""));
+    var bgMode = st.image && st.imageMode === "background";
+    if (bgMode) { screen.classList.add("has-bg"); screen.style.backgroundImage = "linear-gradient(rgba(0,0,0,.55),rgba(0,0,0,.55)), url(" + JSON.stringify(st.image) + ")"; }
+    var free = !!layout.free;
+    var card = el("div", "start-card");
+    if (free) screen.classList.add("start-free"); else applyStartLayout(screen, card, layout);
+
+    var comps = [];
+    function mk(key, elm) { elm.classList.add("start-comp"); elm.setAttribute("data-comp", key); comps.push({ key: key, el: elm }); return elm; }
+    if (st.image && st.imageMode !== "background") { var im = el("img", "start-image"); im.src = st.image; im.alt = ""; mk("image", im); }
+    mk("title", el("h1", "start-title", escapeHtml(st.title || meta.title || "CYOA")));
+    var sub = (st.subtitle != null && st.subtitle !== "") ? st.subtitle : (meta.author ? ("by " + meta.author) : "");
+    if (sub) mk("subtitle", el("div", "start-author", escapeHtml(sub)));
+    var desc = (st.text != null && st.text !== "") ? st.text : meta.description;
+    if (desc) { var d = el("div", "start-desc"); d.innerHTML = sanitizeHtml(formatRich(desc, true)); mk("text", d); }
+    var actions = el("div", "start-actions");
+    var label = escapeHtml(st.buttonLabel || "▶ 시작하기");
+    if (opts.mode === "preview") {
+      actions.appendChild(el("button", "btn primary", label));
+    } else if (opts.hasSaved) {
+      var r = el("button", "btn primary", "이어서 하기"); r.addEventListener("click", opts.onResume || function () {});
+      var n = el("button", "btn", "처음부터"); n.addEventListener("click", opts.onNew || function () {});
+      actions.appendChild(r); actions.appendChild(n);
+    } else {
+      var s = el("button", "btn primary", label); s.addEventListener("click", opts.onStart || function () {});
+      actions.appendChild(s);
+    }
+    mk("actions", actions);
+    if (opts.hint) mk("hint", el("div", "start-hint", opts.hint));
+
+    if (free) {
+      var items = layout.items || {};
+      comps.forEach(function (c, i) {
+        var it = items[c.key] || {};
+        c.el.style.left = (it.x != null ? it.x : 8) + "%";
+        c.el.style.top = (it.y != null ? it.y : 8 + i * 13) + "%";
+        if (it.w != null) c.el.style.width = it.w + "%";
+        if (c.key !== "image" && it.align) c.el.style.textAlign = it.align;
+        screen.appendChild(c.el);
+      });
+    } else {
+      comps.forEach(function (c) { card.appendChild(c.el); });
+      screen.appendChild(card);
+    }
+    mountEl.appendChild(screen);
+    // 확장 훅: 재생 모드(뷰어·미리보기)에서만 발행
+    if (opts.mode !== "edit") hooksEmit("startscreen", { project: project, mountEl: mountEl, screen: screen, mode: opts.mode });
+  }
+
+  // 무대 렌더: mountEl 비우고 채움
+  function renderStage(project, state, mountEl, opts) {
+    opts = opts || {};
+    opts.mode = opts.mode || "play";
+    var style = normalizeStyle(project.style);
+    applyTheme(style, document.documentElement);
+    mountEl.innerHTML = "";
+    var stage = el("div", "cyoa-stage layout-" + style.layoutPreset + " choice-" + style.choicePreset);
+    if (opts.animatePage && opts.mode === "play" && style.pageTransition !== "none") {
+      stage.classList.add("page-transition", "page-transition-" + style.pageTransition);
+    }
+
+    var scroll = opts.mode === "play" && project.settings && project.settings.flow === "scroll";
+    if (opts.pageId) {
+      var pg = findPage(project, opts.pageId);
+      if (pg) stage.appendChild(renderPage(project, pg, state, opts));
+    } else if (scroll) {
+      (project.pages || []).forEach(function (pg) { stage.appendChild(renderPage(project, pg, state, opts)); });
+    } else {
+      var cur = findPage(project, state.currentPageId) || project.pages[0];
+      if (cur) {
+        var pageEl = renderPage(project, cur, state, opts);
+        // 뒤로가기
+        if (opts.mode === "play" && state.history.length) {
+          var back = el("button", "btn ghost btn-sm nav-back", "← 이전");
+          back.addEventListener("click", function () { if (opts.onBack) opts.onBack(); });
+          pageEl.insertBefore(back, pageEl.firstChild);
+        }
+        stage.appendChild(pageEl);
+      }
+    }
+    mountEl.appendChild(stage);
+    // 확장 훅: 재생 렌더 후에만 발행(편집 캔버스 보호)
+    if (opts.mode === "play") hooksEmit("render", { project: project, state: state, mountEl: mountEl, mode: opts.mode, stage: stage });
+  }
+
+  /* ---------------- 빌드 코드 (선택 공유) ---------------- */
+  function encodeBuildCode(state) {
+    var payload = {
+      s: state.selected, c: state.counts, e: state.eventScores, t: state.takenLinks,
+      ve: state.varEvents, p: state.currentPageId, h: state.history
+    };
+    try { return btoa(unescape(encodeURIComponent(JSON.stringify(payload)))); }
+    catch (e) { return ""; }
+  }
+  function applyBuildCode(state, code) {
+    try {
+      var p = JSON.parse(decodeURIComponent(escape(atob(code))));
+      state.selected = p.s || [];
+      state.counts = p.c || {};
+      state.eventScores = p.e || {};
+      state.varEvents = p.ve || [];
+      state.takenLinks = p.t || [];
+      state.currentPageId = p.p || state.currentPageId;
+      state.history = p.h || [];
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* ---------------- 결과 이미지(WebP) 추출 ---------------- */
+  function _loadImg(src) {
+    return new Promise(function (res) {
+      if (!src) { res(null); return; }
+      var im = new Image();
+      im.crossOrigin = "anonymous"; // 교차출처 비CORS 이미지는 로드 실패시켜 캔버스 오염 방지
+      im.onload = function () { res(im); };
+      im.onerror = function () { res(null); };
+      im.src = src;
+    });
+  }
+  function _roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+  function _drawCover(ctx, img, x, y, w, h) {
+    var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    if (!iw || !ih) return;
+    var s = Math.max(w / iw, h / ih), sw = w / s, sh = h / s;
+    ctx.drawImage(img, (iw - sw) / 2, (ih - sh) / 2, sw, sh, x, y, w, h);
+  }
+  function _font(ctx, weight, size, fam) { ctx.font = weight + " " + size + "px " + fam; }
+  function _wrap(ctx, text, maxW, maxLines) {
+    text = String(text == null ? "" : text);
+    var all = [], cur = "", i, ch;
+    for (i = 0; i < text.length; i++) {
+      ch = text.charAt(i);
+      if (ch === "\n") { all.push(cur); cur = ""; continue; }
+      if (cur && ctx.measureText(cur + ch).width > maxW) { all.push(cur); cur = ch; }
+      else cur += ch;
+    }
+    if (cur) all.push(cur);
+    if (all.length <= maxLines) return all;
+    var kept = all.slice(0, maxLines), last = kept[maxLines - 1];
+    while (last.length && ctx.measureText(last + "…").width > maxW) last = last.slice(0, -1);
+    kept[maxLines - 1] = last + "…";
+    return kept;
+  }
+
+  function buildResultCanvas(project, state) {
+    var S = project.style || {};
+    var col = { bg: S.bg || "#0e0f14", text: S.text || "#e9e9ef", accent: S.accent || "#d8b25a", card: S.card || "#1a1b22", border: S.cardBorder || "#33343d" };
+    var fam = S.font || "system-ui, sans-serif";
+    var W = 860, pad = 36, dpr = 2, contentW = W - pad * 2;
+    var title = (project.meta && project.meta.title) || "내 선택";
+    var totals = computeCurrencies(project, state);
+
+    var groups = [];
+    (project.pages || []).forEach(function (pg) {
+      (pg.rows || []).forEach(function (r) {
+        var sel = (r.choices || []).filter(function (c) { return isSelected(state, c.id); });
+        if (sel.length) groups.push({ row: r.title || "", choices: sel });
+      });
+    });
+
+    var proms = [];
+    groups.forEach(function (g) { g.choices.forEach(function (c) { if (c.image) proms.push(_loadImg(c.image).then(function (im) { c.__img = im; })); }); });
+
+    var cardH = 92, cardGap = 8, rowTitleH = 30, groupGap = 12;
+
+    // 한 번의 render(ctx, draw)로 측정과 그리기를 동일 로직으로 처리
+    function render(ctx, draw) {
+      var yy = pad, i;
+      _font(ctx, "bold", 30, fam);
+      _wrap(ctx, title, contentW, 2).forEach(function (ln) {
+        if (draw) { ctx.fillStyle = col.text; ctx.fillText(ln, pad, yy); }
+        yy += 38;
+      });
+      yy += 4;
+      var curs = project.currencies || [];
+      if (curs.length) {
+        _font(ctx, "600", 15, fam);
+        var cx = pad, ph = 26;
+        curs.forEach(function (c) {
+          var txt = c.name + " " + (totals[c.id] || 0);
+          var pw = ctx.measureText(txt).width + 22;
+          if (cx + pw > W - pad && cx > pad) { cx = pad; yy += ph + 6; }
+          if (draw) {
+            ctx.fillStyle = col.card; _roundRect(ctx, cx, yy, pw, ph, 13); ctx.fill();
+            ctx.strokeStyle = col.border; ctx.lineWidth = 1; _roundRect(ctx, cx, yy, pw, ph, 13); ctx.stroke();
+            ctx.fillStyle = c.color || col.accent; ctx.fillText(txt, cx + 11, yy + 5);
+          }
+          cx += pw + 8;
+        });
+        yy += ph + 12;
+      }
+      if (!groups.length) {
+        _font(ctx, "normal", 16, fam);
+        if (draw) { ctx.fillStyle = "rgba(233,233,239,.55)"; ctx.fillText("선택한 항목이 없습니다.", pad, yy); }
+        yy += 40;
+      }
+      groups.forEach(function (g) {
+        _font(ctx, "bold", 20, fam);
+        if (draw) { ctx.fillStyle = col.accent; ctx.fillText(g.row || "(행)", pad, yy); }
+        yy += rowTitleH;
+        g.choices.forEach(function (c) {
+          if (draw) {
+            ctx.fillStyle = col.card; _roundRect(ctx, pad, yy, contentW, cardH, 12); ctx.fill();
+            ctx.strokeStyle = col.border; ctx.lineWidth = 1.5; _roundRect(ctx, pad, yy, contentW, cardH, 12); ctx.stroke();
+          }
+          var tx = pad + 14;
+          if (c.__img) {
+            var ix = pad + 10, iy = yy + 10, iw = 110, ih = cardH - 20;
+            if (draw) { ctx.save(); _roundRect(ctx, ix, iy, iw, ih, 8); ctx.clip(); _drawCover(ctx, c.__img, ix, iy, iw, ih); ctx.restore(); }
+            tx = ix + iw + 14;
+          }
+          var cnt = getCount(state, c.id) || 1;
+          var twAvail = pad + contentW - 12 - tx;
+          _font(ctx, "bold", 18, fam);
+          var tlines = _wrap(ctx, (c.title || "") + (cnt > 1 ? "  ×" + cnt : ""), twAvail, 2), ty = yy + 13;
+          tlines.forEach(function (ln) { if (draw) { ctx.fillStyle = col.text; ctx.fillText(ln, tx, ty); } ty += 24; });
+          if (c.scores && c.scores.length) {
+            _font(ctx, "600", 13, fam);
+            var sx = tx;
+            c.scores.forEach(function (s) {
+              var cd = currencyDef(project, s.currency); var nm = cd ? cd.name : s.currency;
+              var val = (Number(s.value) || 0) * cnt; var stxt = nm + " " + (val > 0 ? "+" : "") + val;
+              var sw = ctx.measureText(stxt).width + 14;
+              if (sx + sw > pad + contentW - 12) return;
+              if (draw) {
+                ctx.fillStyle = "rgba(216,178,90,.18)"; _roundRect(ctx, sx, ty, sw, 20, 6); ctx.fill();
+                ctx.fillStyle = val > 0 ? "#5fb37a" : (val < 0 ? "#e0654f" : col.text);
+                ctx.fillText(stxt, sx + 7, ty + 3);
+              }
+              sx += sw + 6;
+            });
+          }
+          yy += cardH + cardGap;
+        });
+        yy += groupGap;
+      });
+      _font(ctx, "normal", 12, fam);
+      var d = new Date(), ds = d.getFullYear() + "." + (d.getMonth() + 1) + "." + d.getDate();
+      if (draw) { ctx.fillStyle = "rgba(233,233,239,.4)"; ctx.fillText(title + " · " + ds, pad, yy); }
+      yy += 22;
+      return yy;
+    }
+
+    return Promise.all(proms).then(function () {
+      var mc = document.createElement("canvas"), mx = mc.getContext("2d");
+      mx.textBaseline = "top";
+      var H = Math.ceil(render(mx, false)) + 8;
+      var canvas = document.createElement("canvas");
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      var ctx = canvas.getContext("2d");
+      ctx.scale(dpr, dpr); ctx.textBaseline = "top";
+      ctx.fillStyle = col.bg; ctx.fillRect(0, 0, W, H);
+      render(ctx, true);
+      return canvas;
+    });
+  }
+
+  function _download(name, blob) {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 600);
+  }
+  function saveResultImage(project, state, baseName) {
+    baseName = (baseName || "cyoa").replace(/[\\/:*?"<>|]+/g, "_");
+    return buildResultCanvas(project, state).then(function (canvas) {
+      return new Promise(function (resolve) {
+        canvas.toBlob(function (blob) {
+          if (blob) {
+            // 브라우저가 WebP 인코딩을 지원하면 webp, 아니면(Safari 등) 같은 그림을 png로 저장
+            if (blob.type === "image/webp") { _download(baseName + ".webp", blob); resolve("webp"); }
+            else { _download(baseName + ".png", blob); resolve("png"); }
+            return;
+          }
+          // 캔버스 오염 등으로 null → png 재시도
+          canvas.toBlob(function (b2) {
+            if (b2) { _download(baseName + ".png", b2); resolve("png"); } else resolve(null);
+          }, "image/png");
+        }, "image/webp", 0.92);
+      });
+    });
+  }
+
+  /* ---------------- 새 프로젝트 ---------------- */
+  function newProject() {
+    var pid = genId("page");
+    return {
+      format: "cyoa-tool", version: 1,
+      customJs: "",
+      meta: { title: "새 CYOA", author: "", description: "", lang: "ko" },
+      start: { title: "", subtitle: "", text: "", buttonLabel: "", image: null, imageMode: "card", layout: defaultStartLayout() },
+      settings: { flow: "paged", startPageId: pid, allowNegativeCurrency: false, showLockedChoices: true, enableBuildCode: true },
+      style: { bg: "#0e0f14", text: "#e9e9ef", accent: "#d8b25a", card: "#1a1b22", cardBorder: "#33343d", font: "system-ui", rowImageHeight: 200, maxWidth: 980, layoutPreset: "default", choicePreset: "card", pageTransition: "none", transitionSpeed: "normal", customCss: "" },
+      currencies: [{ id: "pt", name: "포인트", start: 100, color: "#d8b25a", allowNegative: false }],
+      variables: [],
+      pages: [{ id: pid, title: "시작", type: "story", text: "여기에 이야기를 작성하세요.\n엔터로 줄을 바꾸고, 빈 줄로 문단을 나눌 수 있어요.", image: null, layout: defaultBlockLayout("page"), rows: [], links: [] }]
+    };
+  }
+
+  /* ---------------- 노출 ---------------- */
+  global.CYOA = {
+    genId: genId, escapeHtml: escapeHtml, clone: clone, sanitizeHtml: sanitizeHtml,
+    interpolate: interpolate, resolveWord: resolveWord,
+    findPage: findPage, findChoice: findChoice, findRowOfChoice: findRowOfChoice,
+    allChoices: allChoices, currencyDef: currencyDef, variableDef: variableDef,
+    computeVars: computeVars,
+    newState: newState, isSelected: isSelected, getCount: getCount, isMulti: isMulti,
+    computeCurrencies: computeCurrencies, evaluateRequirements: evaluateRequirements,
+    choiceStatus: choiceStatus, toggleChoice: toggleChoice, changeCount: changeCount, pruneInvalid: pruneInvalid,
+    navigate: navigate, goBack: goBack,
+    applyTheme: applyTheme, normalizeStyle: normalizeStyle, renderStage: renderStage, renderStartScreen: renderStartScreen,
+    defaultBlockLayout: defaultBlockLayout, normalizeBlockLayout: normalizeBlockLayout,
+    defaultStartLayout: defaultStartLayout, normalizeStartLayout: normalizeStartLayout,
+    currencyBadgesHTML: currencyBadgesHTML,
+    encodeBuildCode: encodeBuildCode, applyBuildCode: applyBuildCode,
+    buildResultCanvas: buildResultCanvas, saveResultImage: saveResultImage,
+    pageAudio: pageAudio,
+    hooks: { on: hooksOn, emit: hooksEmit }, runCustomJs: runCustomJs, resetHooks: resetHooks,
+    newProject: newProject
+  };
+})(window);

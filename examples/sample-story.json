@@ -1,0 +1,80 @@
+{
+  "format": "cyoa-tool",
+  "version": 1,
+  "meta": {
+    "title": "갈림길의 숲",
+    "author": "예시 작성자",
+    "description": "선택에 따라 이야기가 갈라지는 짧은 분기 서사입니다.",
+    "lang": "ko"
+  },
+  "settings": {
+    "flow": "paged",
+    "startPageId": "s_intro",
+    "allowNegativeCurrency": true,
+    "showLockedChoices": true,
+    "enableBuildCode": false
+  },
+  "style": {
+    "bg": "#12100e",
+    "text": "#ece6da",
+    "accent": "#c98a3a",
+    "card": "#211d18",
+    "cardBorder": "#3a342b",
+    "font": "Georgia, serif",
+    "rowImageHeight": 220,
+    "maxWidth": 760,
+    "customCss": ""
+  },
+  "currencies": [
+    { "id": "gold", "name": "금화", "start": 0, "color": "#c98a3a", "allowNegative": true }
+  ],
+  "pages": [
+    {
+      "id": "s_intro",
+      "title": "숲의 입구",
+      "type": "story",
+      "text": "<p>해질 무렵, 당신은 오래된 숲의 입구에 도착했다. 두 갈래 길이 보인다. 왼쪽은 어둑한 <strong>샛길</strong>, 오른쪽은 잘 닦인 <strong>큰길</strong>이다.</p>",
+      "image": null,
+      "rows": [],
+      "links": [
+        { "label": "샛길로 간다", "target": "s_path", "requirements": [], "scores": [ { "currency": "gold", "value": 5 } ] },
+        { "label": "큰길로 간다", "target": "s_road", "requirements": [], "scores": [] }
+      ]
+    },
+    {
+      "id": "s_path",
+      "title": "어둑한 샛길",
+      "type": "story",
+      "text": "<p>샛길에서 반짝이는 동전 주머니를 주웠다. (금화 +5) 더 깊이 들어가자 낡은 다리가 나온다.</p>",
+      "image": null,
+      "rows": [],
+      "links": [
+        { "label": "다리를 건넌다", "target": "s_bridge", "requirements": [], "scores": [] },
+        { "label": "되돌아간다", "target": "s_intro", "requirements": [], "scores": [] }
+      ]
+    },
+    {
+      "id": "s_road",
+      "title": "큰길의 상인",
+      "type": "story",
+      "text": "<p>큰길에서 상인을 만났다. 그는 다리 통행료로 금화 10을 요구한다.</p>",
+      "image": null,
+      "rows": [],
+      "links": [
+        { "label": "통행료를 낸다 (금화 10 필요)", "target": "s_bridge", "requirements": [ { "kind": "currency", "id": "gold", "op": ">=", "value": 10 } ], "scores": [ { "currency": "gold", "value": -10 } ] },
+        { "label": "샛길로 돌아간다", "target": "s_path", "requirements": [], "scores": [] }
+      ]
+    },
+    {
+      "id": "s_bridge",
+      "title": "강 건너편",
+      "type": "story",
+      "text": "<p>마침내 강을 건넜다. 멀리 마을의 불빛이 보인다. <em>— 끝 —</em></p>",
+      "image": null,
+      "rows": [],
+      "links": [
+        { "label": "처음부터 다시", "target": "s_intro", "requirements": [], "scores": [] }
+      ]
+    }
+  ]
+}

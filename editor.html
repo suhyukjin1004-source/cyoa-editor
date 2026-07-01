@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CYOA 에디터</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="editor">
+    <div class="editor-top">
+      <span class="brand">🧭 CYOA 에디터</span>
+      <button class="btn btn-sm" id="btnHelp">❔ 도움말</button>
+      <button class="btn btn-sm" id="btnNew">새로</button>
+      <button class="btn btn-sm" id="btnLoad">불러오기</button>
+      <input type="file" id="fileLoad" accept=".json,application/json" hidden />
+      <button class="btn btn-sm" id="btnSave">저장 (JSON)</button>
+      <button class="btn btn-sm" id="btnSettings">⚙ 설정</button>
+      <button class="btn btn-sm" id="btnGraph">🕸 연결망</button>
+      <button class="btn btn-sm primary" id="btnExport">⬆ neocities 내보내기</button>
+      <span class="spacer"></span>
+      <button class="btn btn-sm" id="btnPreview">▶ 미리보기</button>
+    </div>
+
+    <div class="editor-tree" id="tree"></div>
+
+    <div class="editor-canvas edit-mode" id="canvasWrap">
+      <div class="edit-banner" id="editBanner">편집 모드 — 캔버스의 요소를 클릭하면 오른쪽에서 편집할 수 있어요.</div>
+      <div class="canvas-inner" id="canvas"></div>
+    </div>
+
+    <div class="editor-inspector" id="inspector"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="engine.js"></script>
+  <script src="graph.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

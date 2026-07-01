@@ -1,0 +1,138 @@
+{
+  "format": "cyoa-tool",
+  "version": 1,
+  "meta": {
+    "title": "이세계 빌드 CYOA",
+    "author": "예시 작성자",
+    "description": "포인트 예산 안에서 종족·능력·동료를 골라 당신의 캐릭터를 완성하세요.",
+    "lang": "ko"
+  },
+  "settings": {
+    "flow": "scroll",
+    "startPageId": "p_build",
+    "allowNegativeCurrency": false,
+    "showLockedChoices": true,
+    "enableBuildCode": true
+  },
+  "style": {
+    "bg": "#0e0f14",
+    "text": "#e9e9ef",
+    "accent": "#d8b25a",
+    "card": "#1a1b22",
+    "cardBorder": "#33343d",
+    "font": "system-ui",
+    "rowImageHeight": 200,
+    "maxWidth": 1100,
+    "customCss": ""
+  },
+  "currencies": [
+    { "id": "pt", "name": "포인트", "start": 100, "color": "#d8b25a", "allowNegative": false },
+    { "id": "hp", "name": "체력", "start": 0, "color": "#e0654f", "allowNegative": true }
+  ],
+  "pages": [
+    {
+      "id": "p_build",
+      "title": "캐릭터 빌드",
+      "type": "build",
+      "text": "",
+      "image": null,
+      "rows": [
+        {
+          "id": "r_race",
+          "title": "종족",
+          "description": "하나만 선택하세요. 종족에 따라 이후 선택지가 달라집니다.",
+          "image": null,
+          "select": { "mode": "single", "min": 1, "max": 1 },
+          "columns": 3,
+          "choices": [
+            {
+              "id": "c_human",
+              "title": "인간",
+              "description": "균형 잡힌 표준 종족. 추가 비용 없음.",
+              "image": "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='240'%20height='160'%3E%3Crect%20width='240'%20height='160'%20fill='%234a6fa5'/%3E%3Ctext%20x='120'%20y='90'%20font-size='28'%20fill='white'%20text-anchor='middle'%3E인간%3C/text%3E%3C/svg%3E",
+              "scores": [ { "currency": "pt", "value": 0 }, { "currency": "hp", "value": 10 } ],
+              "requirements": []
+            },
+            {
+              "id": "c_elf",
+              "title": "엘프",
+              "description": "마법 친화. 체력은 낮지만 마법 선택지가 저렴해집니다.",
+              "image": "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='240'%20height='160'%3E%3Crect%20width='240'%20height='160'%20fill='%233f8f63'/%3E%3Ctext%20x='120'%20y='90'%20font-size='28'%20fill='white'%20text-anchor='middle'%3E엘프%3C/text%3E%3C/svg%3E",
+              "scores": [ { "currency": "pt", "value": -10 }, { "currency": "hp", "value": -5 } ],
+              "requirements": []
+            },
+            {
+              "id": "c_orc",
+              "title": "오크",
+              "description": "강인한 육체. 체력이 크게 오릅니다.",
+              "image": null,
+              "scores": [ { "currency": "pt", "value": -15 }, { "currency": "hp", "value": 30 } ],
+              "requirements": []
+            }
+          ]
+        },
+        {
+          "id": "r_power",
+          "title": "능력",
+          "description": "원하는 만큼 선택하세요(다중 선택).",
+          "image": null,
+          "select": { "mode": "multi", "min": 0, "max": 3 },
+          "columns": 2,
+          "choices": [
+            {
+              "id": "c_fireball",
+              "title": "화염구",
+              "description": "강력한 공격 마법.",
+              "image": null,
+              "scores": [ { "currency": "pt", "value": -25 } ],
+              "requirements": []
+            },
+            {
+              "id": "c_arcane",
+              "title": "비전 숙련 (엘프 전용)",
+              "description": "엘프를 선택해야 열립니다. 마법 위력 강화.",
+              "image": null,
+              "scores": [ { "currency": "pt", "value": -15 } ],
+              "requirements": [ { "kind": "choice", "id": "c_elf", "mode": "selected" } ]
+            },
+            {
+              "id": "c_rage",
+              "title": "광폭화 (오크 전용)",
+              "description": "오크를 선택해야 열립니다. 전투 중 체력 소모로 위력 상승.",
+              "image": null,
+              "scores": [ { "currency": "pt", "value": -20 } ],
+              "requirements": [ { "kind": "choice", "id": "c_orc", "mode": "selected" } ]
+            }
+          ]
+        },
+        {
+          "id": "r_companion",
+          "title": "동료",
+          "description": "포인트가 40 이상 남아 있을 때만 전설의 동료를 영입할 수 있습니다.",
+          "image": null,
+          "select": { "mode": "single", "min": 0, "max": 1 },
+          "columns": 2,
+          "choices": [
+            {
+              "id": "c_dog",
+              "title": "충직한 늑대",
+              "description": "저렴하고 든든한 동료.",
+              "image": null,
+              "scores": [ { "currency": "pt", "value": -10 } ],
+              "requirements": []
+            },
+            {
+              "id": "c_dragon",
+              "title": "어린 드래곤",
+              "description": "포인트 40 이상 보유 시 영입 가능.",
+              "image": null,
+              "scores": [ { "currency": "pt", "value": -40 } ],
+              "requirements": [ { "kind": "currency", "id": "pt", "op": ">=", "value": 40 } ]
+            }
+          ]
+        }
+      ],
+      "links": []
+    }
+  ]
+}
