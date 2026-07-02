@@ -38,11 +38,80 @@
   /* ---------------- 영속 ---------------- */
   var _autosaveWarned = false;
   function autosave() {
+    scheduleUndoSnapshot(); // 모든 변경이 autosave 를 지나므로 여기가 undo 스냅샷의 단일 후킹 지점
     try { localStorage.setItem(AUTO_KEY, JSON.stringify(project)); _autosaveWarned = false; }
     catch (e) {
       // 저장 실패(보통 용량 초과)를 조용히 삼키지 않고 1회 알림 — 작업 유실 방지
       if (!_autosaveWarned) { _autosaveWarned = true; toast("⚠ 자동 저장 실패 — 저장 공간이 부족합니다. 이미지 용량을 줄이거나 '내보내기'로 백업하세요."); }
     }
+  }
+
+  /* ---------------- 되돌리기 / 다시 실행 (undo/redo) ----------------
+     스냅샷 기반: 변경 후 500ms 잠잠해지면(디바운스) 이전 상태를 undo 스택에 push.
+     연속 타이핑은 한 단계로 묶이고, 삭제·재정렬·프로젝트 교체까지 모두 잡힌다. */
+  var UNDO_MAX = 30;                 // 이미지(데이터 URL) 포함 대형 프로젝트의 메모리 고려
+  var _undoStack = [], _redoStack = [];
+  var _lastSnap = null, _snapTimer = null, _restoring = false;
+  function scheduleUndoSnapshot() {
+    if (_restoring) return;
+    clearTimeout(_snapTimer);
+    _snapTimer = setTimeout(commitUndoSnapshot, 500);
+    updateUndoButtons();
+  }
+  function commitUndoSnapshot() {
+    clearTimeout(_snapTimer); _snapTimer = null;
+    var snap = JSON.stringify(project);
+    if (_lastSnap === null) { _lastSnap = snap; updateUndoButtons(); return; } // 최초 기준선
+    if (snap === _lastSnap) { updateUndoButtons(); return; }
+    _undoStack.push(_lastSnap);
+    if (_undoStack.length > UNDO_MAX) _undoStack.shift();
+    _redoStack.length = 0;
+    _lastSnap = snap;
+    updateUndoButtons();
+  }
+  function resetUndoBaseline() {
+    clearTimeout(_snapTimer); _snapTimer = null;
+    _lastSnap = JSON.stringify(project);
+    updateUndoButtons();
+  }
+  function undo() {
+    if (_snapTimer) commitUndoSnapshot(); // 대기 중 변경 먼저 확정
+    if (!_undoStack.length) { toast("되돌릴 작업이 없습니다."); return; }
+    _redoStack.push(_lastSnap);
+    _lastSnap = _undoStack.pop();
+    applySnapshot(_lastSnap);
+    toast("↩ 되돌렸습니다.");
+  }
+  function redo() {
+    if (_snapTimer) commitUndoSnapshot();
+    if (!_redoStack.length) { toast("다시 실행할 작업이 없습니다."); return; }
+    _undoStack.push(_lastSnap);
+    if (_undoStack.length > UNDO_MAX) _undoStack.shift();
+    _lastSnap = _redoStack.pop();
+    applySnapshot(_lastSnap);
+    toast("↪ 다시 실행했습니다.");
+  }
+  function applySnapshot(snap) {
+    _restoring = true;
+    try {
+      project = JSON.parse(snap);
+      normalize();
+      // 복원 상태를 그대로 영속화(스냅샷 재스케줄 없이 — _restoring 가드)
+      try { localStorage.setItem(AUTO_KEY, snap); } catch (e) {}
+      // 사라진 페이지를 가리키는 편집 상태 폴백(선택 요소는 renderInspector 의 기존 폴백이 처리)
+      if (!C.findPage(project, editPageId)) {
+        editPageId = (project.settings && project.settings.startPageId) || (project.pages[0] || {}).id;
+      }
+      applyLiveTheme();
+      renderAll();
+      if (previewOpen) renderPreviewPanel({ preserveScroll: true });
+    } finally { _restoring = false; }
+    updateUndoButtons();
+  }
+  function updateUndoButtons() {
+    var u = document.getElementById("btnUndo"), r = document.getElementById("btnRedo");
+    if (u) u.disabled = !_undoStack.length && !_snapTimer;
+    if (r) r.disabled = !_redoStack.length;
   }
 
   /* ---------------- 미리보기 기기 ---------------- */
@@ -2391,6 +2460,7 @@
       "<b>그룹</b>(설정)으로 여러 행의 선택지를 묶으면 “능력 2개 이상” 같은 조건과 🎒 <b>백팩</b> 분류에 쓸 수 있어요.",
       "행 인스펙터의 <b>🎲 랜덤 선택</b>을 켜면 플레이어가 주사위로 무작위 선택을 굴릴 수 있어요.",
       "플레이어는 뷰어에서 🎒 <b>백팩</b>(실시간 선택 요약·저장 슬롯)과 🌓 <b>밝기 전환</b>을 쓸 수 있어요.",
+      "실수해도 <b>↩ 되돌리기(Ctrl+Z)</b>로 복구할 수 있어요(삭제·이동·수정 모두). ↪ 다시 실행은 Ctrl+Shift+Z.",
       "작업은 브라우저에 <b>자동 저장</b>돼요. 백업·다른 기기로 옮기려면 <b>저장(JSON)</b>으로 파일을 받으세요.",
       "🕸 <b>연결망</b> 뷰로 선택지·페이지가 어떻게 얽혀 있는지 한눈에 볼 수 있어요.",
       "고급: <b>커스텀 CSS·JS</b>로 직접 확장할 수 있어요(설정 → 확장, 문서는 docs/EXTEND.md)."
@@ -2958,6 +3028,18 @@
       toast("저장됨 (JSON 다운로드)");
     });
     document.getElementById("btnHelp").addEventListener("click", openHelp);
+    document.getElementById("btnUndo").addEventListener("click", undo);
+    document.getElementById("btnRedo").addEventListener("click", redo);
+    document.addEventListener("keydown", function (e) {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      var k = String(e.key).toLowerCase();
+      if (k !== "z" && k !== "y") return;
+      // 텍스트 입력 중엔 브라우저 네이티브 undo 를 존중
+      var t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      e.preventDefault();
+      if (k === "y" || e.shiftKey) redo(); else undo();
+    });
     document.getElementById("btnSettings").addEventListener("click", openSettings);
     document.getElementById("btnExport").addEventListener("click", openExport);
     document.getElementById("btnPreview").addEventListener("click", togglePreview);
@@ -2976,6 +3058,7 @@
       project = restored; normalize();
       editPageId = project.settings.startPageId || project.pages[0].id;
       applyLiveTheme(); renderAll();
+      resetUndoBaseline(); // 복원 직후를 undo 기준선으로 — 첫 편집 전 상태로 돌아올 수 있게
       toast("이전 작업을 자동 복원했습니다.");
     } else {
       // 데모 프로젝트 시도, 실패하면 새 프로젝트
