@@ -361,11 +361,26 @@ a { color: var(--accent); }
    에디터 (.editor 레이아웃)
    ================================================================= */
 .editor {
+  --tree-width: 280px;
+  --inspector-width: 320px;
   display: grid;
   grid-template-rows: auto 1fr;
-  grid-template-columns: 280px 1fr 320px;
-  grid-template-areas: "top top top" "tree canvas inspector";
+  grid-template-columns: var(--tree-width) 5px 1fr 5px var(--inspector-width);
+  grid-template-areas: "top top top top top" "tree rs-tree canvas rs-insp inspector";
   height: 100vh;
+}
+/* 패널 폭 조절 핸들 — 드래그로 좌우 폭 조절, 더블클릭으로 초기화 */
+.pane-resizer {
+  position: relative; z-index: 20;
+  cursor: col-resize;
+  background: transparent;
+  transition: background .12s;
+}
+.pane-resizer-tree { grid-area: rs-tree; margin-left: -1px; }       /* 트리의 border-right 위에 겹침 */
+.pane-resizer-inspector { grid-area: rs-insp; margin-right: -1px; } /* 인스펙터의 border-left 위에 겹침 */
+.pane-resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: -3px; right: -3px; } /* 히트 영역 확장 */
+.pane-resizer:hover, .pane-resizer.dragging {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .editor-top {
   grid-area: top;
@@ -787,7 +802,7 @@ a { color: var(--accent); }
 
 @media (max-width: 980px) {
   .editor { grid-template-columns: 1fr; grid-template-areas: "top" "canvas"; }
-  .editor-tree, .editor-inspector { display: none; }
+  .editor-tree, .editor-inspector, .pane-resizer { display: none; }
 }
 
 /* =================================================================
@@ -888,3 +903,73 @@ a { color: var(--accent); }
 .editor-canvas.edit-mode .nav-link:hover > .reorder-handle,
 .editor-canvas.edit-mode .reorder-handle:hover,
 .editor-canvas.edit-mode .reorder-dragging > .reorder-handle { opacity: 1; }
+
+/* =================================================================
+   랜덤 선택(🎲) — 행 상단 버튼 + 룰렛 하이라이트 연출
+   ================================================================= */
+.row-roll { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.roll-btn { font-weight: 600; }
+.roll-note { font-size: 12px; color: var(--muted); }
+.choice.roll-flash {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* =================================================================
+   백팩(🎒 실시간 선택 요약) — 뷰어 사이드 패널 + 에디터 미리보기 오버레이
+   ================================================================= */
+.backpack-panel {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 60;
+  width: min(340px, 92vw);
+  background: var(--card); border-left: 1px solid var(--card-border);
+  display: flex; flex-direction: column;
+  transform: translateX(105%); transition: transform .22s ease;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, .35);
+}
+.backpack-panel.open { transform: translateX(0); }
+.backpack-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--card-border);
+  color: var(--text); flex: 0 0 auto;
+}
+.backpack-body { flex: 1 1 auto; overflow-y: auto; padding: 12px 14px; }
+.backpack-currencies { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.backpack-empty { color: var(--muted); font-size: 13px; padding: 6px 2px; }
+.backpack-cat { margin-bottom: 14px; }
+.backpack-cat-title { margin: 0 0 6px; font-size: 13px; color: var(--accent); }
+.backpack-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px; margin-bottom: 6px;
+  background: var(--bg); border: 1px solid var(--card-border); border-radius: 8px;
+}
+.backpack-thumb { width: 42px; height: 42px; object-fit: cover; border-radius: 6px; flex: 0 0 auto; }
+.backpack-item-body { flex: 1 1 auto; min-width: 0; }
+.backpack-item-title { font-size: 13px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.backpack-count { color: var(--accent); font-weight: 700; }
+.backpack-item-scores { margin-top: 2px; }
+.backpack-x {
+  flex: 0 0 auto; width: 22px; height: 22px; line-height: 20px;
+  border: 1px solid var(--card-border); border-radius: 6px;
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 11px;
+}
+.backpack-x:hover { color: #e0654f; border-color: #e0654f; }
+/* 저장 슬롯 */
+.backpack-slots { flex: 0 0 auto; border-top: 1px solid var(--card-border); padding: 10px 14px; max-height: 40%; overflow-y: auto; }
+.backpack-slots-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: var(--text); }
+.backpack-slot {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 6px; margin-bottom: 4px;
+  background: var(--bg); border: 1px solid var(--card-border); border-radius: 7px;
+}
+.backpack-slot-name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backpack-slot-ts { color: var(--muted); font-size: 11px; margin-left: 4px; }
+/* 에디터 미리보기용 오버레이 백팩 */
+.preview-backpack {
+  position: absolute; top: 46px; right: 8px; bottom: 8px; z-index: 8;
+  width: min(280px, 85%);
+  background: var(--card); border: 1px solid var(--card-border); border-radius: 10px;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .4);
+}
+.preview-view-shell { position: relative; }

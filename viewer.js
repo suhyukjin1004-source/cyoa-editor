@@ -18,24 +18,103 @@
   var curBar = el("div", "currency-bar");
   var tools = el("div"); tools.style.cssText = "display:flex;gap:6px;";
   var muteBtn = el("button", "btn btn-sm", "🔊"); muteBtn.hidden = true; muteBtn.title = "배경 음악 켜기/끄기";
+  var themeBtn = el("button", "btn btn-sm", "🌓"); themeBtn.hidden = true; themeBtn.title = "밝기 전환";
+  var packBtn = el("button", "btn btn-sm", "🎒"); packBtn.title = "백팩 (내 선택)";
   var imageBtn = el("button", "btn btn-sm", "🖼 결과 이미지");
   var codeBtn = el("button", "btn btn-sm", "빌드코드"); codeBtn.hidden = true;
   var resetBtn = el("button", "btn btn-sm", "처음으로");
-  tools.appendChild(muteBtn); tools.appendChild(imageBtn); tools.appendChild(codeBtn); tools.appendChild(resetBtn);
+  tools.appendChild(muteBtn); tools.appendChild(themeBtn); tools.appendChild(packBtn); tools.appendChild(imageBtn); tools.appendChild(codeBtn); tools.appendChild(resetBtn);
   topbar.appendChild(titleSpan); topbar.appendChild(curBar); topbar.appendChild(tools);
   var mount = el("div");
   view.appendChild(topbar); view.appendChild(mount);
   var audio = el("audio"); audio.loop = true; audio.preload = "auto"; audio.volume = 0.6;
   var toastEl = el("div", "toast");
   var startEl = el("div", "start-screen"); startEl.hidden = true;
-  root.appendChild(view); root.appendChild(audio); root.appendChild(toastEl); root.appendChild(startEl);
+  // 백팩 사이드 패널
+  var packPanel = el("aside", "backpack-panel");
+  var packHead = el("div", "backpack-head");
+  packHead.appendChild(el("strong", null, "🎒 내 선택"));
+  var packClose = el("button", "btn btn-sm", "✕"); packClose.title = "닫기";
+  packHead.appendChild(packClose);
+  var packMount = el("div", "backpack-body");
+  var slotsBox = el("div", "backpack-slots");
+  packPanel.appendChild(packHead); packPanel.appendChild(packMount); packPanel.appendChild(slotsBox);
+  root.appendChild(view); root.appendChild(audio); root.appendChild(toastEl); root.appendChild(startEl); root.appendChild(packPanel);
 
   var project = null, state = null, saveKey = "cyoa_save_default";
+  var packOpen = false, themeInverted = false;
 
   function toast(msg) { toastEl.textContent = msg; toastEl.classList.add("show"); clearTimeout(toastEl._t); toastEl._t = setTimeout(function () { toastEl.classList.remove("show"); }, 1800); }
 
   /* ---------- 저장/복원 ---------- */
   function persist() { try { localStorage.setItem(saveKey, JSON.stringify(state)); } catch (e) {} }
+  // 저장 슬롯: 오토세이브(persist)와 별개로, 이름 붙인 상태를 빌드코드로 보관
+  var MAX_SLOTS = 10;
+  function loadSlots() {
+    try { return JSON.parse(localStorage.getItem(saveKey + ":slots")) || []; } catch (e) { return []; }
+  }
+  function saveSlots(arr) {
+    try { localStorage.setItem(saveKey + ":slots", JSON.stringify(arr)); return true; }
+    catch (e) { toast("⚠ 저장 실패 — 브라우저 저장 공간이 부족합니다."); return false; }
+  }
+
+  /* ---------- 백팩 패널 ---------- */
+  function renderSlots() {
+    slotsBox.innerHTML = "";
+    var head = el("div", "backpack-slots-head");
+    head.appendChild(el("strong", null, "💾 저장 슬롯"));
+    var slots = loadSlots();
+    var addBtn = el("button", "btn btn-sm", "＋ 현재 상태 저장");
+    addBtn.disabled = slots.length >= MAX_SLOTS;
+    if (addBtn.disabled) addBtn.title = "슬롯이 가득 찼습니다 (" + MAX_SLOTS + "개)";
+    addBtn.addEventListener("click", function () {
+      var name = prompt("저장 이름:", "저장 " + (slots.length + 1));
+      if (name == null) return;
+      slots.push({ name: (name.trim() || "저장 " + (slots.length + 1)), ts: Date.now(), code: CY.encodeBuildCode(state) });
+      if (saveSlots(slots)) { renderSlots(); toast("저장했습니다."); }
+    });
+    head.appendChild(addBtn);
+    slotsBox.appendChild(head);
+    if (!slots.length) {
+      slotsBox.appendChild(el("p", "backpack-empty", "저장된 슬롯이 없습니다. (진행은 자동 저장됩니다 — 슬롯은 분기 비교용 수동 저장)"));
+      return;
+    }
+    slots.forEach(function (s, i) {
+      var line = el("div", "backpack-slot");
+      var d = new Date(s.ts || 0);
+      var when = d.getMonth() + 1 + "/" + d.getDate() + " " + d.getHours() + ":" + ("0" + d.getMinutes()).slice(-2);
+      line.appendChild(el("span", "backpack-slot-name", CY.escapeHtml(s.name || "저장 " + (i + 1)) + ' <span class="backpack-slot-ts">' + when + "</span>"));
+      var load = el("button", "btn btn-sm", "불러오기");
+      load.addEventListener("click", function () {
+        if (CY.applyBuildCode(state, s.code)) { persist(); render(); renderBackpack(); toast("'" + (s.name || "") + "' 을(를) 불러왔습니다."); }
+        else toast("저장 데이터가 손상되었습니다.");
+      });
+      var x = el("button", "backpack-x", "✕"); x.title = "슬롯 삭제";
+      x.addEventListener("click", function () {
+        if (!confirm("'" + (s.name || "") + "' 슬롯을 삭제할까요?")) return;
+        slots.splice(i, 1); saveSlots(slots); renderSlots();
+      });
+      line.appendChild(load); line.appendChild(x);
+      slotsBox.appendChild(line);
+    });
+  }
+  function renderBackpack() {
+    if (!packOpen || !project) return;
+    CY.renderBackpackPanel(project, state, packMount, {
+      onRemove: function (id) { CY.toggleChoice(project, state, id); persist(); render(); renderBackpack(); }
+    });
+  }
+  function togglePack(open) {
+    packOpen = open == null ? !packOpen : !!open;
+    packPanel.classList.toggle("open", packOpen);
+    if (packOpen) { renderBackpack(); renderSlots(); }
+  }
+
+  /* ---------- 밝기(명도 반전) 토글 ---------- */
+  function allowBrightness() { return !(project && project.settings && project.settings.allowBrightnessToggle === false); }
+  function applyCurrentTheme() {
+    CY.applyTheme(themeInverted ? CY.invertStyle(project.style) : project.style, document.documentElement);
+  }
   function restore() {
     try {
       var raw = localStorage.getItem(saveKey);
@@ -79,6 +158,7 @@
     titleSpan.textContent = (project.meta && project.meta.title) || "CYOA";
     curBar.innerHTML = CY.currencyBadgesHTML(project, state);
     codeBtn.hidden = !(project.settings && project.settings.enableBuildCode);
+    themeBtn.hidden = !allowBrightness();
   }
   function render(animatePage) {
     renderTopbar();
@@ -88,8 +168,15 @@
       onCount: function (id, delta) { CY.changeCount(project, state, id, delta); persist(); render(); },
       onNavigate: function (link) { CY.navigate(project, state, link); persist(); render(true); window.scrollTo(0, 0); },
       onBack: function () { CY.goBack(state); persist(); render(true); window.scrollTo(0, 0); },
+      onRoll: function (row) {
+        var id = CY.rollRandomChoice(project, state, row);
+        persist(); render();
+        if (!id) toast("굴릴 수 있는 선택지가 없습니다.");
+      },
       animatePage: !!animatePage
     });
+    if (themeInverted) applyCurrentTheme(); // renderStage 가 제작자 테마를 다시 적용하므로 반전 유지
+    renderBackpack();
     updateAudio();
   }
 
@@ -109,6 +196,7 @@
       onNew: function () { state = CY.newState(project); persist(); begin(); },
       hint: hasAnyBgm() ? "🔊 배경 음악이 포함되어 있어요" : ""
     });
+    if (themeInverted) applyCurrentTheme(); // renderStartScreen 의 테마 재적용을 덮음
     startEl.hidden = false;
   }
   function begin() { startEl.hidden = true; topbar.hidden = false; render(true); pendingPlay = false; updateAudio(); window.scrollTo(0, 0); }
@@ -125,6 +213,13 @@
       if (bgmMuted) audio.pause();
       updateAudio();
     };
+    themeBtn.onclick = function () {
+      themeInverted = !themeInverted;
+      try { localStorage.setItem(saveKey + ":bright", themeInverted ? "1" : "0"); } catch (e) {}
+      applyCurrentTheme();
+    };
+    packBtn.onclick = function () { togglePack(); };
+    packClose.onclick = function () { togglePack(false); };
     imageBtn.onclick = function () {
       imageBtn.disabled = true; var prev = imageBtn.textContent; imageBtn.textContent = "이미지 생성 중…";
       CY.saveResultImage(project, state, (project.meta && project.meta.title) || "cyoa").then(function (type) {
@@ -160,6 +255,8 @@
     }
     saveKey = "cyoa_save_" + ((project.meta && project.meta.title) || "default");
     document.title = (project.meta && project.meta.title) || "CYOA";
+    try { themeInverted = allowBrightness() && localStorage.getItem(saveKey + ":bright") === "1"; } catch (e) { themeInverted = false; }
+    if (themeInverted) applyCurrentTheme();
     state = CY.newState(project);
     var hash = location.hash.replace(/^#/, "");
     var codeParam = /(?:^|&)code=([^&]+)/.exec(hash);

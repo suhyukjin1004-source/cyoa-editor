@@ -1193,6 +1193,7 @@
   /* =========================================================
      우측 플레이어 미리보기
      ========================================================= */
+  var _pvPackOpen = false;              // 미리보기 백팩 오버레이 표시
   function previewUsesStartScreen() {
     return !(project.settings && project.settings.startScreen === false);
   }
@@ -1264,6 +1265,11 @@
       });
       tools.appendChild(mute);
     }
+    var pack = el("button", "btn btn-sm", "🎒");
+    pack.title = "백팩 (선택 요약)";
+    if (_pvPackOpen) pack.classList.add("primary");
+    pack.addEventListener("click", function () { _pvPackOpen = !_pvPackOpen; renderPreviewPanel({ preserveScroll: true }); });
+    tools.appendChild(pack);
     var image = el("button", "btn btn-sm", "🖼");
     image.title = "결과 이미지";
     image.addEventListener("click", function () {
@@ -1329,8 +1335,33 @@
         C.goBack(pstate);
         renderPreviewPanel({ scrollTop: 0, animatePage: true });
       },
+      onRoll: function (row) {
+        var top = capturePreviewScroll();
+        var id = C.rollRandomChoice(project, pstate, row);
+        renderPreviewPanel({ scrollTop: top });
+        if (!id) toast("굴릴 수 있는 선택지가 없습니다.");
+      },
       animatePage: !!panelOpts.animatePage
     });
+    if (_pvPackOpen) {
+      var bp = el("div", "preview-backpack");
+      var bh = el("div", "backpack-head");
+      bh.appendChild(el("strong", null, "🎒 내 선택"));
+      var bx = el("button", "btn btn-sm", "✕");
+      bx.addEventListener("click", function () { _pvPackOpen = false; renderPreviewPanel({ preserveScroll: true }); });
+      bh.appendChild(bx);
+      bp.appendChild(bh);
+      var bm = el("div", "backpack-body");
+      C.renderBackpackPanel(project, pstate, bm, {
+        onRemove: function (id) {
+          var top = capturePreviewScroll();
+          C.toggleChoice(project, pstate, id);
+          renderPreviewPanel({ scrollTop: top });
+        }
+      });
+      bp.appendChild(bm);
+      shell.appendChild(bp);
+    }
   }
   function renderPreviewPanel(opts) {
     opts = opts || {};
@@ -1769,6 +1800,38 @@
     ]);
   }
 
+  // 그룹 태그 편집기 — 선택지를 프로젝트 그룹(설정 모달에서 정의)에 넣고 뺌
+  function groupsEditor(ch) {
+    var defs = project.groups || [];
+    if (!defs.length) return null; // 그룹 미정의 시 섹션 숨김
+    if (!ch.groups) ch.groups = [];
+    var kids = defs.map(function (g) {
+      return checkbox(g.name, ch.groups.indexOf(g.id) !== -1, function (c) {
+        if (c) { if (ch.groups.indexOf(g.id) === -1) ch.groups.push(g.id); }
+        else ch.groups = ch.groups.filter(function (x) { return x !== g.id; });
+        softRefresh();
+      });
+    });
+    var note = el("p", "empty-inspector", "요구조건 「그룹 선택 수」와 🎒 백팩 분류에 쓰입니다. 그룹은 설정(⚙)에서 정의합니다.");
+    note.style.cssText = "text-align:left;padding:2px;margin:0;";
+    kids.push(note);
+    return group("그룹", kids);
+  }
+
+  // 랜덤 선택(주사위) 편집기 — 행 단위
+  function randomEditor(row) {
+    if (!row.random) row.random = { enabled: false, label: "" };
+    var rd = row.random;
+    var kids = [checkbox("🎲 랜덤 선택 버튼 표시", rd.enabled === true, function (c) { rd.enabled = c; renderInspector(); softRefresh(); })];
+    if (rd.enabled) {
+      kids.push(field("버튼 문구 (비우면 '랜덤 선택')", textInput(rd.label, function (v) { rd.label = v; softRefresh(); })));
+      var note = el("p", "empty-inspector", "플레이 시 요구조건을 통과하고 예산이 감당되는 선택지 중 하나를 무작위로 고릅니다. 단일 행은 교체, 다중 행은 남은 슬롯에 추가됩니다.");
+      note.style.cssText = "text-align:left;padding:2px;margin:0;";
+      kids.push(note);
+    }
+    return group("랜덤 선택 (주사위)", kids);
+  }
+
   // 애드온 편집기 (조건부 추가 텍스트)
   function addonsEditor(ch) {
     if (!ch.addons) ch.addons = [];
@@ -1801,11 +1864,15 @@
     var curOpts = project.currencies.map(function (c) { return { value: c.id, label: c.name }; });
     var varOpts = (project.variables || []).map(function (v) { return { value: v.id, label: v.name }; });
     var opOpts = [">=", "<=", ">", "<", "==", "!="].map(function (o) { return { value: o, label: o }; });
+    var groupOpts = (project.groups || []).map(function (g) { return { value: g.id, label: g.name }; });
+    var globalOpts = (project.globalRequirements || []).map(function (g) { return { value: g.id, label: g.name }; });
     var kindOpts = [
       { value: "choice", label: "선택지" }, { value: "oneOf", label: "이 중 하나(OR)" },
       { value: "currency", label: "통화 값" }, { value: "compare", label: "통화 비교" },
       { value: "var", label: "변수 값" }
     ];
+    if (groupOpts.length) kindOpts.push({ value: "group", label: "그룹 선택 수" });
+    if (globalOpts.length) kindOpts.push({ value: "global", label: "조건 세트(글로벌)" });
     reqs.forEach(function (r, i) {
       var wrap = el("div", "req-block");
       var line = el("div", "req-line");
@@ -1817,6 +1884,8 @@
         else if (v === "currency") { r.id = (curOpts[0] || {}).value; r.op = ">="; r.value = 0; }
         else if (v === "compare") { r.a = (curOpts[0] || {}).value; r.op = ">="; r.b = (curOpts[0] || {}).value; }
         else if (v === "var") { r.id = (varOpts[0] || {}).value; var vd0 = C.variableDef(project, r.id); if (vd0 && vd0.type === "flag") r.op = "isTrue"; else { r.op = ">="; r.value = 0; } }
+        else if (v === "group") { r.id = (groupOpts[0] || {}).value; r.op = ">="; r.value = 1; }
+        else if (v === "global") { r.id = (globalOpts[0] || {}).value; }
         refresh();
       }));
       if (r.kind === "choice") {
@@ -1836,6 +1905,15 @@
         line.appendChild(sub2);
       } else if (r.kind === "oneOf") {
         line.appendChild(selectInput([{ value: "selected", label: "하나라도 선택" }, { value: "notSelected", label: "모두 미선택" }], r.mode || "selected", function (v) { r.mode = v; softRefresh(); }));
+        line.appendChild(el("div")); // 4열 정렬용 빈칸
+      } else if (r.kind === "group") {
+        line.appendChild(selectInput(groupOpts, r.id, function (v) { r.id = v; softRefresh(); }));
+        var gsub = el("div"); gsub.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:4px;";
+        gsub.appendChild(selectInput(opOpts, r.op || ">=", function (v) { r.op = v; softRefresh(); }));
+        gsub.appendChild(numInput(r.value, function (v) { r.value = v; softRefresh(); }));
+        line.appendChild(gsub);
+      } else if (r.kind === "global") {
+        line.appendChild(selectInput(globalOpts, r.id, function (v) { r.id = v; softRefresh(); }));
         line.appendChild(el("div")); // 4열 정렬용 빈칸
       } else if (r.kind === "var") {
         line.appendChild(selectInput(varOpts, r.id, function (v) {
@@ -2160,6 +2238,7 @@
         field("열 수", numInput(rrow.columns || 3, function (v) { rrow.columns = v || 1; softRefresh(); })),
         imageField(rrow.image, function (val) { rrow.image = val; softRefresh(); })
       ])));
+      $inspector.appendChild(randomEditor(rrow));
       $inspector.appendChild(layoutEditor(rrow, "row"));
       return;
     }
@@ -2180,6 +2259,8 @@
       $inspector.appendChild(group("효과 (변수 변경 — 선택 시)", [effectsEditor(ch.effects, true)]));
       $inspector.appendChild(multiEditor(ch));
       $inspector.appendChild(autoActivateEditor(ch));
+      var grpEd = groupsEditor(ch);
+      if (grpEd) $inspector.appendChild(grpEd);
       $inspector.appendChild(addonsEditor(ch));
 
       var hideCb = checkbox("조건 미충족 시 숨김 (조건을 만족하기 전까지 안 보임)", ch.hideWhenLocked === true, function (c) { ch.hideWhenLocked = c; softRefresh(); });
@@ -2306,7 +2387,10 @@
       "<b>통화</b>(포인트·체력 등)는 설정 <b>⚙</b>에서 정의하고 선택지 점수로 증감해요. 음수=비용, 양수=획득.",
       "<b>변수</b>(설정 → 변수)는 예산 잠금 없는 자유 상태(수치/참·거짓 깃발). 선택지·링크의 ‘효과’로 바꾸고 본문 <code>{{var:id}}</code>로 표시해요.",
       "<b>조건부 텍스트</b>: 본문에 <code>{{if:var:brave}}…{{else}}…{{/if}}</code>로 상태에 따라 다른 글이 나오게 할 수 있어요(조건은 choice/var/cur, <code>!</code>로 부정).",
-      "<b>요구조건</b>으로 특정 선택/통화/변수 조건을 만족해야 고르거나 이동할 수 있게 만들어요(잠금·숨김).",
+      "<b>요구조건</b>으로 특정 선택/통화/변수 조건을 만족해야 고르거나 이동할 수 있게 만들어요(잠금·숨김). 자주 쓰는 조건 묶음은 <b>글로벌 요구조건</b>(설정)으로 저장해 재사용할 수 있어요.",
+      "<b>그룹</b>(설정)으로 여러 행의 선택지를 묶으면 “능력 2개 이상” 같은 조건과 🎒 <b>백팩</b> 분류에 쓸 수 있어요.",
+      "행 인스펙터의 <b>🎲 랜덤 선택</b>을 켜면 플레이어가 주사위로 무작위 선택을 굴릴 수 있어요.",
+      "플레이어는 뷰어에서 🎒 <b>백팩</b>(실시간 선택 요약·저장 슬롯)과 🌓 <b>밝기 전환</b>을 쓸 수 있어요.",
       "작업은 브라우저에 <b>자동 저장</b>돼요. 백업·다른 기기로 옮기려면 <b>저장(JSON)</b>으로 파일을 받으세요.",
       "🕸 <b>연결망</b> 뷰로 선택지·페이지가 어떻게 얽혀 있는지 한눈에 볼 수 있어요.",
       "고급: <b>커스텀 CSS·JS</b>로 직접 확장할 수 있어요(설정 → 확장, 문서는 docs/EXTEND.md)."
@@ -2357,7 +2441,8 @@
       checkbox("잠긴 선택지 표시(끄면 숨김)", project.settings.showLockedChoices, function (v) { project.settings.showLockedChoices = v; autosave(); }),
       checkbox("통화 음수 허용(전역)", project.settings.allowNegativeCurrency, function (v) { project.settings.allowNegativeCurrency = v; autosave(); }),
       checkbox("빌드코드 공유 사용", project.settings.enableBuildCode, function (v) { project.settings.enableBuildCode = v; autosave(); }),
-      checkbox("공유 뷰어 오프닝 표시", project.settings.startScreen !== false, function (v) { project.settings.startScreen = v; autosave(); })
+      checkbox("공유 뷰어 오프닝 표시", project.settings.startScreen !== false, function (v) { project.settings.startScreen = v; autosave(); }),
+      checkbox("플레이어 밝기 전환(🌓) 허용", project.settings.allowBrightnessToggle !== false, function (v) { project.settings.allowBrightnessToggle = v; autosave(); })
     ]));
 
     // 통화
@@ -2423,6 +2508,62 @@
     varGroup.appendChild(el("h3", null, "변수 (상태/깃발 — id, 이름, 타입, 초깃값)"));
     varGroup.appendChild(varBox);
     m.appendChild(varGroup);
+
+    // 그룹 — 행을 가로지르는 선택지 묶음(요구조건 「그룹 선택 수」·백팩 분류에 사용)
+    var grpBox = el("div");
+    function renderGroups() {
+      clear(grpBox);
+      if (!project.groups) project.groups = [];
+      var hint = el("p", "empty-inspector", "여러 행에 흩어진 선택지를 하나의 묶음으로 태그합니다(선택지 인스펙터 「그룹」). 요구조건 「그룹 선택 수」(예: 능력 그룹에서 2개 이상)와 🎒 백팩 분류에 쓰입니다.");
+      hint.style.cssText = "margin:0 0 6px;"; grpBox.appendChild(hint);
+      project.groups.forEach(function (g, i) {
+        var r = el("div"); r.style.cssText = "display:grid;grid-template-columns:1fr 1.4fr 30px;gap:5px;align-items:center;margin-bottom:4px;";
+        r.appendChild(textInput(g.id, function (v) { g.id = v.trim() || g.id; autosave(); }, "id"));
+        r.appendChild(textInput(g.name, function (v) { g.name = v; autosave(); }, "이름"));
+        var x = el("button", "mini-x", "✕");
+        x.addEventListener("click", function () { project.groups.splice(i, 1); renderGroups(); autosave(); });
+        r.appendChild(x);
+        grpBox.appendChild(r);
+      });
+      var add = el("button", "btn btn-sm", "＋ 그룹 추가");
+      add.addEventListener("click", function () { project.groups.push({ id: C.genId("grp"), name: "새 그룹" }); renderGroups(); autosave(); });
+      grpBox.appendChild(add);
+    }
+    renderGroups();
+    var grpGroup = el("div", "insp-group");
+    grpGroup.appendChild(el("h3", null, "그룹 (선택지 묶음 — 요구조건·백팩 분류)"));
+    grpGroup.appendChild(grpBox);
+    m.appendChild(grpGroup);
+
+    // 글로벌 요구조건 — 조건 세트를 한 번 정의해 여러 곳에서 참조
+    var greqBox = el("div");
+    function renderGlobalReqs() {
+      clear(greqBox);
+      if (!project.globalRequirements) project.globalRequirements = [];
+      var hint = el("p", "empty-inspector", "자주 쓰는 조건 묶음을 세트로 저장해 요구조건 「조건 세트(글로벌)」로 참조합니다. 본문에서는 {{if:global:세트id}}로 사용. 세트끼리 참조할 수도 있습니다(순환 참조는 무시됨).");
+      hint.style.cssText = "margin:0 0 6px;"; greqBox.appendChild(hint);
+      project.globalRequirements.forEach(function (g, i) {
+        if (!g.requirements) g.requirements = [];
+        var blk = el("div", "req-block");
+        var r2 = el("div", "row2");
+        r2.appendChild(field("세트 id", textInput(g.id, function (v) { g.id = v.trim() || g.id; autosave(); })));
+        r2.appendChild(field("이름", textInput(g.name, function (v) { g.name = v; autosave(); })));
+        blk.appendChild(r2);
+        blk.appendChild(reqEditor(g.requirements, renderGlobalReqs));
+        var rm = el("button", "btn btn-sm danger", "세트 삭제");
+        rm.addEventListener("click", function () { project.globalRequirements.splice(i, 1); renderGlobalReqs(); autosave(); });
+        blk.appendChild(rm);
+        greqBox.appendChild(blk);
+      });
+      var add = el("button", "btn btn-sm", "＋ 조건 세트");
+      add.addEventListener("click", function () { project.globalRequirements.push({ id: C.genId("greq"), name: "새 조건 세트", requirements: [] }); renderGlobalReqs(); autosave(); });
+      greqBox.appendChild(add);
+    }
+    renderGlobalReqs();
+    var greqGroup = el("div", "insp-group");
+    greqGroup.appendChild(el("h3", null, "글로벌 요구조건 (조건 세트 재사용)"));
+    greqGroup.appendChild(greqBox);
+    m.appendChild(greqGroup);
 
     // 동적 단어 (wordMap)
     var wordsBox = el("div");
@@ -2730,6 +2871,70 @@
   /* =========================================================
      초기화
      ========================================================= */
+  /* =========================================================
+     패널 폭 조절 (트리/인스펙터 리사이저)
+     ========================================================= */
+  var PANE_KEY = "cyoa_pane_widths_v1";
+  function initPaneResizers() {
+    var editor = document.querySelector(".editor");
+    var rsTree = document.getElementById("resizeTree");
+    var rsInsp = document.getElementById("resizeInspector");
+    if (!editor || !rsTree || !rsInsp) return;
+    function getW(prop, fallback) {
+      var v = parseInt(getComputedStyle(editor).getPropertyValue(prop), 10);
+      return isFinite(v) && v > 0 ? v : fallback;
+    }
+    // 저장된 폭 복원
+    try {
+      var saved = JSON.parse(localStorage.getItem(PANE_KEY));
+      if (saved && saved.tree) editor.style.setProperty("--tree-width", saved.tree + "px");
+      if (saved && saved.insp) editor.style.setProperty("--inspector-width", saved.insp + "px");
+    } catch (e) {}
+    function persistWidths() {
+      try {
+        localStorage.setItem(PANE_KEY, JSON.stringify({ tree: getW("--tree-width", 280), insp: getW("--inspector-width", 320) }));
+      } catch (e) {}
+    }
+    function wire(handle, prop, min, max, fromRight, fallback) {
+      handle.title = "드래그로 폭 조절 · 더블클릭으로 초기화";
+      handle.addEventListener("pointerdown", function (e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+        handle.classList.add("dragging");
+        var startX = e.clientX, startW = getW(prop, fallback);
+        function move(ev) {
+          var d = ev.clientX - startX;
+          var w = fromRight ? startW - d : startW + d;
+          // 캔버스 최소 폭 확보: 두 패널을 아무리 넓혀도 가운데가 짓눌리지 않게
+          var other = fromRight ? getW("--tree-width", 280) : getW("--inspector-width", 320);
+          var maxAllowed = Math.min(max, window.innerWidth - other - 320);
+          w = Math.max(min, Math.min(maxAllowed, w));
+          editor.style.setProperty(prop, w + "px");
+          rescalePreviewFrames(); // 인스펙터가 미리보기 패널일 때 viewport 스케일 갱신
+        }
+        function up(ev) {
+          try { handle.releasePointerCapture(ev.pointerId); } catch (err) {}
+          handle.classList.remove("dragging");
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          handle.removeEventListener("pointercancel", up);
+          persistWidths();
+        }
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+      });
+      handle.addEventListener("dblclick", function () {
+        editor.style.removeProperty(prop);
+        persistWidths();
+        rescalePreviewFrames();
+      });
+    }
+    wire(rsTree, "--tree-width", 170, 560, false, 280);
+    wire(rsInsp, "--inspector-width", 220, 720, true, 320);
+  }
+
   function init() {
     if (!document.getElementById("tree")) return; // 에디터 DOM이 없으면(테스트 페이지 등) 스킵
     $tree = document.getElementById("tree");
@@ -2762,6 +2967,7 @@
       window.CYOAGraph.open(project, { onEditNode: function (type, id) { select(type, id); } });
     });
     window.addEventListener("resize", rescalePreviewFrames);
+    initPaneResizers();
 
     // 자동저장 복원 또는 데모 로드
     var restored = null;

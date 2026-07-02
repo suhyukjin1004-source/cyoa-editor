@@ -86,13 +86,15 @@
     return w.default || "";
   }
   // 인라인 조건 텍스트 {{if:조건}}…{{else}}…{{/if}} — 조건은 R1 요구조건 평가를 재사용.
-  // 조건 형식: choice:ID | !choice:ID | var:ID [OP N] | !var:ID | cur:ID [OP N]
+  // 조건 형식: choice:ID | !choice:ID | var:ID [OP N] | !var:ID | cur:ID [OP N] | group:ID [OP N] | global:ID
   function parseInlineReq(cond, project) {
-    var m = /^(choice|var|cur)\s*:\s*([^\s<>=!]+)\s*(>=|<=|==|!=|>|<)?\s*(-?\d+(?:\.\d+)?)?$/.exec(cond);
+    var m = /^(choice|var|cur|group|global)\s*:\s*([^\s<>=!]+)\s*(>=|<=|==|!=|>|<)?\s*(-?\d+(?:\.\d+)?)?$/.exec(cond);
     if (!m) return null;
     var ns = m[1], id = m[2], op = m[3], val = m[4];
     if (ns === "choice") return { kind: "choice", id: id, mode: "selected" };
     if (ns === "cur") return op ? { kind: "currency", id: id, op: op, value: Number(val) } : { kind: "currency", id: id, op: "!=", value: 0 };
+    if (ns === "group") return op ? { kind: "group", id: id, op: op, value: Number(val) } : { kind: "group", id: id, op: ">=", value: 1 };
+    if (ns === "global") return { kind: "global", id: id };
     var def = variableDef(project, id);
     if (op) return { kind: "var", id: id, op: op, value: Number(val) };
     if (def && def.type === "flag") return { kind: "var", id: id, op: "isTrue" };
@@ -187,6 +189,22 @@
     var d = currencyDef(project, id);
     return !!(project.settings && project.settings.allowNegativeCurrency) || !!(d && d.allowNegative);
   }
+  function groupDef(project, id) {
+    return (project.groups || []).find(function (g) { return g.id === id; }) || null;
+  }
+  function globalReqDef(project, id) {
+    return (project.globalRequirements || []).find(function (g) { return g.id === id; }) || null;
+  }
+  // 그룹에 속한 선택지 중 현재 선택된 개수(선택지 단위 — 다중 카운트 ×N은 세지 않음)
+  function countGroupSelected(project, state, groupId) {
+    var n = 0;
+    eachRow(project, function (r) {
+      (r.choices || []).forEach(function (c) {
+        if ((c.groups || []).indexOf(groupId) !== -1 && isSelected(state, c.id)) n++;
+      });
+    });
+    return n;
+  }
 
   /* ---------------- 상태 ---------------- */
   function newState(project) {
@@ -263,8 +281,9 @@
     return out;
   }
 
-  /* ---------------- 요구조건 평가 (배열 = AND) ---------------- */
-  function evaluateRequirements(reqs, project, state, totals) {
+  /* ---------------- 요구조건 평가 (배열 = AND) ----------------
+     _seenGlobals: 글로벌 조건 세트가 서로를 참조할 때의 순환 가드(재귀 경로의 방문 집합) */
+  function evaluateRequirements(reqs, project, state, totals, _seenGlobals) {
     var reasons = [];
     if (!reqs || !reqs.length) return { ok: true, reasons: reasons };
     totals = totals || computeCurrencies(project, state);
@@ -302,6 +321,21 @@
           var ca = currencyDef(project, req.a), cb = currencyDef(project, req.b);
           reasons.push((ca ? ca.name : req.a) + " " + req.op + " " + (cb ? cb.name : req.b) + " 필요");
         }
+      } else if (req.kind === "group") {
+        var gd = groupDef(project, req.id);
+        var gn = countGroupSelected(project, state, req.id);
+        if (!compare(gn, req.op || ">=", Number(req.value) || 0)) {
+          reasons.push("'" + (gd ? gd.name : req.id) + "' 그룹 선택 수 " + (req.op || ">=") + " " + (Number(req.value) || 0) + " 필요");
+        }
+      } else if (req.kind === "global") {
+        var grd = globalReqDef(project, req.id);
+        if (!grd) return; // 삭제된 세트 참조는 통과(무시)
+        var seen = _seenGlobals || {};
+        if (seen[req.id]) return; // 순환 참조 — 통과 처리로 무한 재귀 방지
+        seen[req.id] = true;
+        var sub = evaluateRequirements(grd.requirements, project, state, totals, seen);
+        delete seen[req.id]; // 경로 이탈 — 다이아몬드 참조(서로 다른 경로의 같은 세트)는 허용
+        if (!sub.ok) reasons.push("'" + (grd.name || req.id) + "' 조건 미충족 (" + sub.reasons.join(", ") + ")");
       } else if (req.kind === "var") {
         if (!varsCache) varsCache = computeVars(project, state);
         var vdef = variableDef(project, req.id);
@@ -502,6 +536,41 @@
     return true;
   }
 
+  /* ---------------- 랜덤 선택(주사위) ----------------
+     행의 후보(보이는·선택 가능·미선택) 중 하나를 무작위로 골라 토글.
+     단일 행은 toggleChoice 가 기존 선택을 교체하고, 다중 행은 남은 슬롯에 추가.
+     성공 시 선택된 choice id, 굴릴 후보가 없으면 null. */
+  function rollRandomChoice(project, state, row) {
+    var totals = computeCurrencies(project, state);
+    var cands = (row.choices || []).filter(function (c) {
+      if (isSelected(state, c.id)) return false;
+      var st = choiceStatus(project, c, row, state, totals);
+      return !st.hidden && st.selectable;
+    });
+    while (cands.length) {
+      var i = Math.floor(Math.random() * cands.length);
+      var pick = cands.splice(i, 1)[0];
+      if (toggleChoice(project, state, pick.id)) {
+        hooksEmit("roll", { project: project, state: state, row: row, choiceId: pick.id });
+        return pick.id;
+      }
+    }
+    return null;
+  }
+
+  /* ---------------- 선택 요약(백팩·결과 이미지 공용) ----------------
+     행 순서대로 선택된 선택지를 구조화해 반환: [{ row, title, choices:[choice…] }] */
+  function collectBuildSummary(project, state) {
+    var out = [];
+    (project.pages || []).forEach(function (pg) {
+      (pg.rows || []).forEach(function (r) {
+        var sel = (r.choices || []).filter(function (c) { return isSelected(state, c.id); });
+        if (sel.length) out.push({ row: r, title: r.title || "", choices: sel });
+      });
+    });
+    return out;
+  }
+
   /* ---------------- 배경 음악(BGM) 판정 ----------------
      반환 { action:"play"|"stop"|"keep", src } — 호스트(뷰어/에디터)가 오디오를 제어 */
   function pageAudio(project, state) {
@@ -545,6 +614,47 @@
     out.pageTransition = pick(out.pageTransition, ["none", "fade", "slide", "zoom"], "none");
     out.transitionSpeed = pick(out.transitionSpeed, ["fast", "normal", "slow"], "normal");
     if (out.customCss == null) out.customCss = "";
+    return out;
+  }
+  // 명도 반전 팔레트: 제작자 테마의 bg/text/card/cardBorder 명도(L)를 뒤집어
+  // 어두운 테마 ↔ 밝은 테마 변형을 만든다(색상·채도·accent는 유지).
+  function _hexToRgb(h) {
+    var m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(h || "").trim());
+    if (!m) return null;
+    var s = m[1];
+    if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+    return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+  }
+  function _invertLightness(hex) {
+    var c = _hexToRgb(hex);
+    if (!c) return hex; // hex 가 아니면(rgb()·이름 등) 그대로 둠
+    var r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
+    var max = Math.max(r, g, b), min = Math.min(r, g, b);
+    var l = (max + min) / 2, d = max - min, h = 0, sat = 0;
+    if (d) {
+      sat = d / (1 - Math.abs(2 * l - 1));
+      if (max === r) h = ((g - b) / d) % 6;
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h *= 60; if (h < 0) h += 360;
+    }
+    l = 1 - l; // 명도 반전
+    var cc = (1 - Math.abs(2 * l - 1)) * sat;
+    var x = cc * (1 - Math.abs(((h / 60) % 2) - 1));
+    var mm = l - cc / 2, rgb;
+    if (h < 60) rgb = [cc, x, 0]; else if (h < 120) rgb = [x, cc, 0];
+    else if (h < 180) rgb = [0, cc, x]; else if (h < 240) rgb = [0, x, cc];
+    else if (h < 300) rgb = [x, 0, cc]; else rgb = [cc, 0, x];
+    return "#" + rgb.map(function (v) {
+      var n = Math.round((v + mm) * 255);
+      n = Math.max(0, Math.min(255, n));
+      return (n < 16 ? "0" : "") + n.toString(16);
+    }).join("");
+  }
+  function invertStyle(style) {
+    var s = normalizeStyle(style), out = {};
+    Object.keys(s).forEach(function (k) { out[k] = s[k]; });
+    ["bg", "text", "card", "cardBorder"].forEach(function (k) { out[k] = _invertLightness(s[k]); });
     return out;
   }
   function layoutMaxWidth(style) {
@@ -830,6 +940,38 @@
       });
     }
     node.appendChild(arrangeImage(row.image, head, row.layout, "row"));
+    // 랜덤 선택(주사위) 버튼 — row.random.enabled 일 때
+    if (row.random && row.random.enabled) {
+      var rollWrap = el("div", "row-roll");
+      var rollBtn = el("button", "btn btn-sm roll-btn", "🎲 " + escapeHtml((row.random.label || "").trim() || "랜덤 선택"));
+      if (opts.mode === "edit") {
+        rollBtn.disabled = true;
+        rollWrap.appendChild(rollBtn);
+        rollWrap.appendChild(el("span", "roll-note", "플레이 시 무작위로 하나를 고릅니다"));
+      } else {
+        rollBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (rollBtn.disabled) return;
+          rollBtn.disabled = true;
+          // 룰렛 연출: 보이는 카드들을 순환 강조한 뒤 확정
+          var cards = node.querySelectorAll(".choice:not(.locked)");
+          var step = 0, maxSteps = Math.max(8, Math.min(16, cards.length * 3));
+          var tick = function () {
+            for (var i = 0; i < cards.length; i++) cards[i].classList.remove("roll-flash");
+            if (step >= maxSteps || !cards.length) {
+              if (opts.onRoll) opts.onRoll(row);
+              return;
+            }
+            cards[step % cards.length].classList.add("roll-flash");
+            step++;
+            setTimeout(tick, 45 + step * 6); // 점점 느려지는 룰렛
+          };
+          tick();
+        });
+        rollWrap.appendChild(rollBtn);
+      }
+      node.appendChild(rollWrap);
+    }
     var grid = el("div", "choice-grid");
     grid.style.setProperty("--cols", row.columns || 3);
     (row.choices || []).forEach(function (ch) {
@@ -1055,6 +1197,66 @@
     if (opts.mode === "play") hooksEmit("render", { project: project, state: state, mountEl: mountEl, mode: opts.mode, stage: stage });
   }
 
+  /* ---------------- 백팩(실시간 선택 요약) ----------------
+     그룹이 정의돼 있고 태그된 선택이 있으면 그룹별, 아니면 행별로 분류 */
+  function backpackCategories(project, state) {
+    var summary = collectBuildSummary(project, state);
+    var groups = project.groups || [];
+    var useGroups = groups.length > 0 && summary.some(function (s) {
+      return s.choices.some(function (c) { return (c.groups || []).length > 0; });
+    });
+    if (!useGroups) {
+      return summary.map(function (s) { return { title: s.title || "(행)", choices: s.choices }; });
+    }
+    var byId = {}, order = [];
+    groups.forEach(function (g) { byId[g.id] = { title: g.name, choices: [] }; order.push(byId[g.id]); });
+    var etc = { title: "기타", choices: [] };
+    summary.forEach(function (s) {
+      s.choices.forEach(function (c) {
+        var tagged = (c.groups || []).filter(function (id) { return byId[id]; });
+        if (tagged.length) tagged.forEach(function (id) { byId[id].choices.push(c); });
+        else etc.choices.push(c);
+      });
+    });
+    order.push(etc);
+    return order.filter(function (o) { return o.choices.length; });
+  }
+  // 백팩 패널 내용 렌더 — 뷰어/에디터 미리보기 공용. opts.onRemove(choiceId)로 해제.
+  function renderBackpackPanel(project, state, mountEl, opts) {
+    opts = opts || {};
+    mountEl.innerHTML = "";
+    var badges = el("div", "backpack-currencies");
+    badges.innerHTML = currencyBadgesHTML(project, state);
+    mountEl.appendChild(badges);
+    var cats = backpackCategories(project, state);
+    if (!cats.length) {
+      mountEl.appendChild(el("p", "backpack-empty", "아직 선택한 항목이 없습니다."));
+      return;
+    }
+    cats.forEach(function (cat) {
+      var sec = el("div", "backpack-cat");
+      sec.appendChild(el("h4", "backpack-cat-title", escapeHtml(cat.title)));
+      cat.choices.forEach(function (c) {
+        var it = el("div", "backpack-item");
+        if (c.image) { var im = el("img", "backpack-thumb"); im.src = c.image; im.alt = ""; im.loading = "lazy"; it.appendChild(im); }
+        var bd = el("div", "backpack-item-body");
+        var cnt = getCount(state, c.id) || 1;
+        bd.appendChild(el("div", "backpack-item-title", escapeHtml(c.title || "(제목 없음)") + (cnt > 1 ? ' <span class="backpack-count">×' + cnt + "</span>" : "")));
+        var sc = scoreTagsHTML(project, c.scores);
+        if (sc) bd.appendChild(el("div", "backpack-item-scores", sc));
+        it.appendChild(bd);
+        if (opts.onRemove) {
+          var x = el("button", "backpack-x", "✕");
+          x.title = "선택 해제";
+          x.addEventListener("click", function () { opts.onRemove(c.id); });
+          it.appendChild(x);
+        }
+        sec.appendChild(it);
+      });
+      mountEl.appendChild(sec);
+    });
+  }
+
   /* ---------------- 빌드 코드 (선택 공유) ---------------- */
   function encodeBuildCode(state) {
     var payload = {
@@ -1130,12 +1332,8 @@
     var title = (project.meta && project.meta.title) || "내 선택";
     var totals = computeCurrencies(project, state);
 
-    var groups = [];
-    (project.pages || []).forEach(function (pg) {
-      (pg.rows || []).forEach(function (r) {
-        var sel = (r.choices || []).filter(function (c) { return isSelected(state, c.id); });
-        if (sel.length) groups.push({ row: r.title || "", choices: sel });
-      });
+    var groups = collectBuildSummary(project, state).map(function (g) {
+      return { row: g.title, choices: g.choices };
     });
 
     var proms = [];
@@ -1269,10 +1467,12 @@
       customJs: "",
       meta: { title: "새 CYOA", author: "", description: "", lang: "ko" },
       start: { title: "", subtitle: "", text: "", buttonLabel: "", image: null, imageMode: "card", layout: defaultStartLayout() },
-      settings: { flow: "paged", startPageId: pid, allowNegativeCurrency: false, showLockedChoices: true, enableBuildCode: true },
+      settings: { flow: "paged", startPageId: pid, allowNegativeCurrency: false, showLockedChoices: true, enableBuildCode: true, allowBrightnessToggle: true },
       style: { bg: "#0e0f14", text: "#e9e9ef", accent: "#d8b25a", card: "#1a1b22", cardBorder: "#33343d", font: "system-ui", rowImageHeight: 200, maxWidth: 980, layoutPreset: "default", choicePreset: "card", pageTransition: "none", transitionSpeed: "normal", customCss: "" },
       currencies: [{ id: "pt", name: "포인트", start: 100, color: "#d8b25a", allowNegative: false }],
       variables: [],
+      groups: [],
+      globalRequirements: [],
       pages: [{ id: pid, title: "시작", type: "story", text: "여기에 이야기를 작성하세요.\n엔터로 줄을 바꾸고, 빈 줄로 문단을 나눌 수 있어요.", image: null, layout: defaultBlockLayout("page"), rows: [], links: [] }]
     };
   }
@@ -1284,6 +1484,9 @@
     findPage: findPage, findChoice: findChoice, findRowOfChoice: findRowOfChoice,
     allChoices: allChoices, currencyDef: currencyDef, variableDef: variableDef,
     computeVars: computeVars,
+    groupDef: groupDef, globalReqDef: globalReqDef, countGroupSelected: countGroupSelected,
+    rollRandomChoice: rollRandomChoice, collectBuildSummary: collectBuildSummary, invertStyle: invertStyle,
+    backpackCategories: backpackCategories, renderBackpackPanel: renderBackpackPanel,
     newState: newState, isSelected: isSelected, getCount: getCount, isMulti: isMulti,
     computeCurrencies: computeCurrencies, evaluateRequirements: evaluateRequirements,
     choiceStatus: choiceStatus, toggleChoice: toggleChoice, changeCount: changeCount, pruneInvalid: pruneInvalid,

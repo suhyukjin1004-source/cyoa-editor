@@ -44,6 +44,7 @@
 | `"startscreen"` | 시작 화면이 그려진 직후 | `project`, `mountEl`, `screen`, `mode` |
 | `"select"` | 선택지를 고르거나 해제·카운트 변경한 직후(최종 상태 기준) | `project`, `state`, `choiceId`, `selected`, `count` |
 | `"navigate"` | 이동 링크로 페이지를 옮긴 직후 | `project`, `state`, `link`, `from`, `to` |
+| `"roll"` | 🎲 랜덤 선택이 확정된 직후 (`select` 도 함께 발생) | `project`, `state`, `row`, `choiceId` |
 
 > **편집 캔버스는 훅을 발생시키지 않습니다.** 훅은 재생(`mode === "play"`) 렌더에서만 발행되므로, 작성자 스크립트가 에디터 편집 화면을 건드리지 않습니다.
 > 한 훅에서 오류가 나도 `try/catch` 로 격리되어 **화면이 깨지지 않습니다**(오류는 콘솔에 기록).
@@ -65,9 +66,16 @@
 | `CYOA.evaluateRequirements(reqs, project, state)` | 요구조건 평가 `{ ok, reasons }` |
 | `CYOA.isSelected(state, id)` / `getCount(state, id)` | 선택/카운트 조회 |
 | `CYOA.choiceStatus(project, choice, row, state)` | 선택지 상태 `{ selected, locked, hidden, … }` |
-| `CYOA.interpolate(text, project, state)` | `{{cur:…}}`·`{{word:…}}` 치환 |
+| `CYOA.interpolate(text, project, state)` | `{{cur:…}}`·`{{word:…}}`·`{{if:…}}` 치환 |
+| `CYOA.computeVars(project, state)` | 현재 변수 값 `{ id: 값 }` |
+| `CYOA.collectBuildSummary(project, state)` | 행 순서대로 선택 요약 `[{ row, title, choices }]` — 결과 이미지·백팩이 쓰는 데이터 |
+| `CYOA.backpackCategories(project, state)` | 백팩 분류(그룹 우선, 없으면 행별) `[{ title, choices }]` |
+| `CYOA.countGroupSelected(project, state, groupId)` | 그룹에 태그된 선택지 중 선택된 개수 |
+| `CYOA.groupDef / globalReqDef(project, id)` | 그룹·글로벌 조건 세트 정의 조회 |
+| `CYOA.rollRandomChoice(project, state, row)` | 행에서 무작위 선택 실행(성공 시 choice id) |
+| `CYOA.invertStyle(style)` | 명도 반전 팔레트(🌓 밝기 전환이 쓰는 함수) |
 | `CYOA.hooks.on(name, fn)` | 훅 등록(= `api.on`) |
-| `CYOA.renderStage / renderStartScreen` | 엔진 렌더러(직접 호출은 보통 불필요) |
+| `CYOA.renderStage / renderStartScreen / renderBackpackPanel` | 엔진 렌더러(직접 호출은 보통 불필요) |
 
 > 전체 노출 목록은 `engine.js` 의 `global.CYOA = { … }` 정의를 참고하세요.
 
@@ -121,6 +129,36 @@ api.on("select", function (ctx) {
 api.on("navigate", function (ctx) {
   // 페이지 전환: ctx.from → ctx.to
   console.log("이동:", ctx.from, "→", ctx.to, "(" + (ctx.link.label || "") + ")");
+});
+```
+
+### D. 🎲 랜덤 결과에 연출 더하기
+
+`"roll"` 훅으로 무작위 선택이 확정된 순간에 반응합니다(수동 선택과 구분됨).
+
+```js
+api.on("roll", function (ctx) {
+  var c = CYOA.findChoice(ctx.project, ctx.choiceId);
+  // 예: 뽑힌 결과를 토스트처럼 잠깐 띄우기
+  var tip = document.createElement("div");
+  tip.textContent = "🎲 운명의 선택: " + (c ? c.title : ctx.choiceId);
+  tip.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);" +
+    "background:var(--card);color:var(--accent);border:1px solid var(--card-border);" +
+    "padding:10px 18px;border-radius:10px;z-index:9999";
+  document.body.appendChild(tip);
+  setTimeout(function () { tip.remove(); }, 2200);
+});
+```
+
+### E. 빌드 요약 데이터 활용
+
+`collectBuildSummary` 로 결과 이미지·백팩과 같은 데이터를 받아 **나만의 엔딩 문구**를 만듭니다.
+
+```js
+api.on("render", function (ctx) {
+  var summary = CYOA.collectBuildSummary(ctx.project, ctx.state);
+  var picks = summary.reduce(function (n, g) { return n + g.choices.length; }, 0);
+  if (picks >= 5) console.log("풀빌드 달성!", summary);
 });
 ```
 
