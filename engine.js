@@ -18,6 +18,18 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  // 사용자(작품 데이터)가 지정한 색을 CSS 색상 값으로만 허용 — 그 외(속성 탈출·CSS 주입)는 기본값으로.
+  // #hex / rgb()·rgba()·hsl()·hsla() / 색 이름(영문·공백)만 통과. 신뢰 못 하는 project.json 방어.
+  function safeColor(v, fallback) {
+    fallback = fallback || "var(--accent)";
+    if (typeof v !== "string") return fallback;
+    var s = v.trim();
+    if (/^#[0-9a-fA-F]{3,8}$/.test(s)) return s;
+    if (/^(rgb|rgba|hsl|hsla)\(\s*[0-9.,%\sA-Za-z/]+\)$/.test(s)) return s;
+    if (/^[A-Za-z][A-Za-z\s]{0,24}$/.test(s)) return s; // 색 이름(예: rebeccapurple)
+    if (/^var\(--[a-zA-Z0-9-]+\)$/.test(s)) return s;
+    return fallback;
+  }
 
   /* ---------------- HTML 새니타이저 (화이트리스트) ---------------- */
   var ALLOWED = {
@@ -748,7 +760,7 @@
       var over = !currencyAllowsNeg(project, c.id) && v < 0;
       return '<span class="currency-badge ' + (over ? "over" : "") + '">' +
         '<span class="cur-name">' + escapeHtml(c.name) + '</span>' +
-        '<span class="cur-val" style="color:' + (c.color || "var(--accent)") + '">' + v + '</span></span>';
+        '<span class="cur-val" style="color:' + safeColor(c.color) + '">' + v + '</span></span>';
     }).join("");
   }
 
@@ -1361,7 +1373,7 @@
           if (draw) {
             ctx.fillStyle = col.card; _roundRect(ctx, cx, yy, pw, ph, 13); ctx.fill();
             ctx.strokeStyle = col.border; ctx.lineWidth = 1; _roundRect(ctx, cx, yy, pw, ph, 13); ctx.stroke();
-            ctx.fillStyle = c.color || col.accent; ctx.fillText(txt, cx + 11, yy + 5);
+            ctx.fillStyle = safeColor(c.color, col.accent); ctx.fillText(txt, cx + 11, yy + 5);
           }
           cx += pw + 8;
         });
@@ -1479,7 +1491,7 @@
 
   /* ---------------- 노출 ---------------- */
   global.CYOA = {
-    genId: genId, escapeHtml: escapeHtml, clone: clone, sanitizeHtml: sanitizeHtml,
+    genId: genId, escapeHtml: escapeHtml, safeColor: safeColor, clone: clone, sanitizeHtml: sanitizeHtml,
     interpolate: interpolate, resolveWord: resolveWord,
     findPage: findPage, findChoice: findChoice, findRowOfChoice: findRowOfChoice,
     allChoices: allChoices, currencyDef: currencyDef, variableDef: variableDef,

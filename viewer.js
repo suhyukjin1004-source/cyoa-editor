@@ -293,6 +293,16 @@
     start(window.__CYOA_PROJECT__, true);   // 단일 파일에 인라인된 프로젝트 = 신뢰 출처
   } else {
     var pOverride = param("p");
+    // ?p= 는 같은 사이트의 상대 경로만 허용 — 교차 출처 URL(//evil/x.json 등)로 남의 도메인 아래에서
+    // 공격자 프로젝트를 렌더링하는 콘텐츠 스푸핑을 차단. (file:// 로 열었을 땐 이 검사를 건너뜀)
+    if (pOverride && location.protocol !== "file:") {
+      var sameOrigin = false;
+      try { sameOrigin = new URL(pOverride, location.href).origin === location.origin; } catch (e) {}
+      if (!sameOrigin) {
+        showLoader("이 링크의 <b>?p=</b> 주소는 다른 사이트를 가리켜 보안상 차단했습니다. 같은 사이트의 파일 경로만 열 수 있어요.");
+        pOverride = null; return;
+      }
+    }
     var src = pOverride || "project.json";
     fetch(src).then(function (res) { if (!res.ok) throw new Error(res.status); return res.json(); })
       .then(function (p) { start(p, !pOverride); })   // 기본 project.json만 신뢰, ?p= 오버라이드는 확인 강제
