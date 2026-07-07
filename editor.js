@@ -2900,6 +2900,9 @@
   }
   function normalize() {
     project.meta = project.meta || { title: "", author: "", description: "", lang: "ko" };
+    // 프로젝트별 안정적 id — 뷰어의 저장 키가 제목이 아니라 이 id로 구분되게 해
+    // 동명 작품끼리 진행/슬롯이 섞이는 것을 막는다(기존 작품엔 이 시점에 1회 부여).
+    if (!project.meta.id) project.meta.id = C.genId("proj");
     project.start = project.start || {};
     if (project.start.title == null) project.start.title = "";
     if (project.start.subtitle == null) project.start.subtitle = "";

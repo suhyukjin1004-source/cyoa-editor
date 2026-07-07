@@ -55,8 +55,10 @@
               if (tag === "A") { el.setAttribute("target", "_blank"); el.setAttribute("rel", "noopener noreferrer"); }
             }
           });
+          // 정리된 자식 노드를 직접 이동 — innerHTML 로 문자열화→재파싱하는 라운드트립을 피해
+          // mXSS(재직렬화 과정에서 위험 노드가 되살아나는 변형 XSS) 여지를 없앤다.
           var inner = cleanNode(child);
-          el.innerHTML = inner.innerHTML;
+          while (inner.firstChild) el.appendChild(inner.firstChild);
           out.appendChild(el);
         } else {
           // 허용되지 않은 태그: 내용만 보존
@@ -1281,13 +1283,17 @@
   function applyBuildCode(state, code) {
     try {
       var p = JSON.parse(decodeURIComponent(escape(atob(code))));
-      state.selected = p.s || [];
-      state.counts = p.c || {};
-      state.eventScores = p.e || {};
-      state.varEvents = p.ve || [];
-      state.takenLinks = p.t || [];
-      state.currentPageId = p.p || state.currentPageId;
-      state.history = p.h || [];
+      if (!p || typeof p !== "object") return false;
+      // 필드별 형태 검증 — 조작된 #code= 링크가 배열/객체 자리에 엉뚱한 타입을 넣어
+      // 이후 forEach/indexOf 에서 뷰어를 크래시시키는 것을 방지(공유 링크 DoS 차단).
+      var obj = function (v) { return v && typeof v === "object" && !Array.isArray(v) ? v : {}; };
+      state.selected = Array.isArray(p.s) ? p.s : [];
+      state.counts = obj(p.c);
+      state.eventScores = obj(p.e);
+      state.varEvents = Array.isArray(p.ve) ? p.ve : [];
+      state.takenLinks = Array.isArray(p.t) ? p.t : [];
+      state.currentPageId = typeof p.p === "string" ? p.p : state.currentPageId;
+      state.history = Array.isArray(p.h) ? p.h : [];
       return true;
     } catch (e) { return false; }
   }
@@ -1477,7 +1483,7 @@
     return {
       format: "cyoa-tool", version: 1,
       customJs: "",
-      meta: { title: "새 CYOA", author: "", description: "", lang: "ko" },
+      meta: { id: genId("proj"), title: "새 CYOA", author: "", description: "", lang: "ko" },
       start: { title: "", subtitle: "", text: "", buttonLabel: "", image: null, imageMode: "card", layout: defaultStartLayout() },
       settings: { flow: "paged", startPageId: pid, allowNegativeCurrency: false, showLockedChoices: true, enableBuildCode: true, allowBrightnessToggle: true },
       style: { bg: "#0e0f14", text: "#e9e9ef", accent: "#d8b25a", card: "#1a1b22", cardBorder: "#33343d", font: "system-ui", rowImageHeight: 200, maxWidth: 980, layoutPreset: "default", choicePreset: "card", pageTransition: "none", transitionSpeed: "normal", customCss: "" },

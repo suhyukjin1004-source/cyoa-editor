@@ -253,8 +253,22 @@
         CY.runCustomJs(project);
       }
     }
-    saveKey = "cyoa_save_" + ((project.meta && project.meta.title) || "default");
-    document.title = (project.meta && project.meta.title) || "CYOA";
+    // 저장 키: 프로젝트 id 우선(동명 작품끼리 진행/슬롯이 섞이지 않게). id가 없는 옛 작품은
+    // 제목 기반 키로 폴백하되, id가 있으면 옛 제목 키에 남은 진행/슬롯을 1회 이관한다.
+    var meta = project.meta || {};
+    var legacyKey = "cyoa_save_" + (meta.title || "default");
+    saveKey = "cyoa_save_" + (meta.id || meta.title || "default");
+    if (meta.id && saveKey !== legacyKey) {
+      try {
+        ["", ":slots", ":bright"].forEach(function (suf) {
+          if (localStorage.getItem(saveKey + suf) == null) {
+            var old = localStorage.getItem(legacyKey + suf);
+            if (old != null) localStorage.setItem(saveKey + suf, old);
+          }
+        });
+      } catch (e) {}
+    }
+    document.title = (meta.title) || "CYOA";
     try { themeInverted = allowBrightness() && localStorage.getItem(saveKey + ":bright") === "1"; } catch (e) { themeInverted = false; }
     if (themeInverted) applyCurrentTheme();
     state = CY.newState(project);
@@ -272,7 +286,11 @@
   /* ---------- 프로젝트 없을 때 드롭 UI ---------- */
   function showLoader(msg) {
     topbar.hidden = true; startEl.hidden = true; mount.innerHTML = "";
-    var box = el("div", "loader-msg", "<h2>CYOA 뷰어</h2><p>" + msg + "</p>");
+    // msg 는 신뢰할 수 없는 값(파싱 에러 메시지에 드롭한 파일 내용 일부가 섞임)이 될 수 있어
+    // innerHTML 이 아니라 textContent 로 넣는다 — 태그가 있어도 문자열 그대로만 표시.
+    var box = el("div", "loader-msg", "<h2>CYOA 뷰어</h2>");
+    var p = el("p"); p.textContent = msg == null ? "" : String(msg);
+    box.appendChild(p);
     var drop = el("div", "drop", "여기에 <b>project.json</b> 파일을 끌어다 놓거나<br>클릭해서 선택하세요.");
     var input = el("input"); input.type = "file"; input.accept = ".json,application/json"; input.style.display = "none";
     drop.onclick = function () { input.click(); };
