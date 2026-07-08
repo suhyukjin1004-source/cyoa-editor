@@ -35,15 +35,87 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 400);
   }
 
-  /* ---------------- 영속 ---------------- */
+  /* ---------------- 영속 (자동저장) ----------------
+     자동저장은 이미지(데이터 URL)를 포함해 커질 수 있어 localStorage(~5MB)를 넘기기 쉽다.
+     → IndexedDB(수백 MB급)를 우선 쓰고, 미지원 환경에선 localStorage로 폴백한다.
+     설정성 소형 키(패널 폭·미리보기 기기·도움말)는 그대로 localStorage. */
+  var IDB_DB = "cyoa_editor", IDB_STORE = "kv", _idbPromise = null;
+  function idbOpen() {
+    if (_idbPromise) return _idbPromise;
+    _idbPromise = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) { reject(new Error("no-indexeddb")); return; }
+      var req = window.indexedDB.open(IDB_DB, 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore(IDB_STORE); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error || new Error("idb-open")); };
+    });
+    return _idbPromise;
+  }
+  function idbPut(key, val) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).put(val, key);
+        tx.oncomplete = function () { resolve(true); };
+        tx.onerror = function () { reject(tx.error); };
+        tx.onabort = function () { reject(tx.error || new Error("idb-abort")); };
+      });
+    });
+  }
+  function idbGet(key) {
+    return idbOpen().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, "readonly");
+        var rq = tx.objectStore(IDB_STORE).get(key);
+        rq.onsuccess = function () { resolve(rq.result); };
+        rq.onerror = function () { reject(rq.error); };
+      });
+    });
+  }
+
   var _autosaveWarned = false;
+  var _autoTimer = null, _autoPending = null;
+  // 자동저장 쓰기(디바운스 300ms) — IDB 성공 시 옛 localStorage 사본 정리, 실패 시 localStorage 폴백.
+  function persistAutosave(str) {
+    _autoPending = str;
+    clearTimeout(_autoTimer);
+    _autoTimer = setTimeout(flushAutosave, 300);
+  }
+  function flushAutosave() {
+    clearTimeout(_autoTimer); _autoTimer = null;
+    var str = _autoPending; if (str == null) return;
+    _autoPending = null;
+    idbPut(AUTO_KEY, str).then(function () {
+      _autosaveWarned = false;
+      try { localStorage.removeItem(AUTO_KEY); } catch (e) {} // 용량 확보
+    }).catch(function () {
+      try { localStorage.setItem(AUTO_KEY, str); _autosaveWarned = false; }
+      catch (e) {
+        if (!_autosaveWarned) { _autosaveWarned = true; toast("⚠ 자동 저장 실패 — 저장 공간이 부족합니다. 이미지 용량을 줄이거나 '내보내기'로 백업하세요."); }
+      }
+    });
+  }
   function autosave() {
     scheduleUndoSnapshot(); // 모든 변경이 autosave 를 지나므로 여기가 undo 스냅샷의 단일 후킹 지점
-    try { localStorage.setItem(AUTO_KEY, JSON.stringify(project)); _autosaveWarned = false; }
-    catch (e) {
-      // 저장 실패(보통 용량 초과)를 조용히 삼키지 않고 1회 알림 — 작업 유실 방지
-      if (!_autosaveWarned) { _autosaveWarned = true; toast("⚠ 자동 저장 실패 — 저장 공간이 부족합니다. 이미지 용량을 줄이거나 '내보내기'로 백업하세요."); }
-    }
+    persistAutosave(JSON.stringify(project));
+  }
+  // 탭을 닫기 직전 대기 중인 자동저장을 밀어넣는다(디바운스로 인한 최근 편집 유실 최소화).
+  window.addEventListener("beforeunload", function () { if (_autoPending != null) flushAutosave(); });
+  // IDB 우선 로드 + 옛 localStorage 자동저장 1회 이관(하위호환). 실패 시 localStorage 직접.
+  function loadAutosaveState() {
+    return idbGet(AUTO_KEY).then(function (val) {
+      if (val != null) { try { return JSON.parse(val); } catch (e) { return null; } }
+      var raw = null; try { raw = localStorage.getItem(AUTO_KEY); } catch (e) {}
+      if (raw) {
+        try { var p = JSON.parse(raw); idbPut(AUTO_KEY, raw).then(function () { try { localStorage.removeItem(AUTO_KEY); } catch (e) {} }, function () {}); return p; }
+        catch (e) {}
+      }
+      return null;
+    }, function () {
+      var raw = null; try { raw = localStorage.getItem(AUTO_KEY); } catch (e) {}
+      if (raw) { try { return JSON.parse(raw); } catch (e) {} }
+      return null;
+    });
   }
 
   /* ---------------- 되돌리기 / 다시 실행 (undo/redo) ----------------
@@ -97,7 +169,7 @@
       project = JSON.parse(snap);
       normalize();
       // 복원 상태를 그대로 영속화(스냅샷 재스케줄 없이 — _restoring 가드)
-      try { localStorage.setItem(AUTO_KEY, snap); } catch (e) {}
+      persistAutosave(snap);
       // 사라진 페이지를 가리키는 편집 상태 폴백(선택 요소는 renderInspector 의 기존 폴백이 처리)
       if (!C.findPage(project, editPageId)) {
         editPageId = (project.settings && project.settings.startPageId) || (project.pages[0] || {}).id;
@@ -3078,21 +3150,21 @@
     window.addEventListener("resize", rescalePreviewFrames);
     initPaneResizers();
 
-    // 자동저장 복원 또는 데모 로드
-    var restored = null;
-    try { var raw = localStorage.getItem(AUTO_KEY); if (raw) restored = JSON.parse(raw); } catch (e) {}
-    if (restored && restored.pages && restored.pages.length) {
-      project = restored; normalize();
-      editPageId = project.settings.startPageId || project.pages[0].id;
-      applyLiveTheme(); renderAll();
-      resetUndoBaseline(); // 복원 직후를 undo 기준선으로 — 첫 편집 전 상태로 돌아올 수 있게
-      toast("이전 작업을 자동 복원했습니다.");
-    } else {
-      // 데모 프로젝트 시도, 실패하면 새 프로젝트
-      fetch("project.json").then(function (r) { return r.json(); }).then(function (p) { loadProject(p); })
-        .catch(function () { loadProject(C.newProject()); });
-      maybeFirstRunHelp();   // 첫 실행(자동저장 없음)인 신규 사용자에게 시작 가이드 1회 표시
-    }
+    // 자동저장 복원(IndexedDB, 옛 localStorage 자동 이관) 또는 데모 로드 — 비동기
+    loadAutosaveState().then(function (restored) {
+      if (restored && restored.pages && restored.pages.length) {
+        project = restored; normalize();
+        editPageId = project.settings.startPageId || project.pages[0].id;
+        applyLiveTheme(); renderAll();
+        resetUndoBaseline(); // 복원 직후를 undo 기준선으로 — 첫 편집 전 상태로 돌아올 수 있게
+        toast("이전 작업을 자동 복원했습니다.");
+      } else {
+        // 데모 프로젝트 시도, 실패하면 새 프로젝트
+        fetch("project.json").then(function (r) { return r.json(); }).then(function (p) { loadProject(p); })
+          .catch(function () { loadProject(C.newProject()); });
+        maybeFirstRunHelp();   // 첫 실행(자동저장 없음)인 신규 사용자에게 시작 가이드 1회 표시
+      }
+    });
   }
 
   // 테스트용 순수 헬퍼 노출(에디터에서만 로드되므로 배포 뷰어엔 영향 없음)
