@@ -1760,19 +1760,42 @@
   }
 
   // 점수 편집기 (scores 배열 in-place)
-  function scoresEditor(scores) {
+  // allowCond=true(선택지 점수)면 각 항목에 조건(할인/조건부 비용)을 달 수 있다. 링크 점수는 끔.
+  function scoresEditor(scores, allowCond) {
     var box = el("div");
     box.appendChild(el("label", null, "점수 (음수=비용, 양수=획득)"));
     var curOpts = project.currencies.map(function (c) { return { value: c.id, label: c.name }; });
     if (!curOpts.length) box.appendChild(el("p", "empty-inspector", "통화가 없습니다(설정에서 추가)."));
     scores.forEach(function (s, i) {
+      var wrap = allowCond ? el("div", "score-block") : box;
       var line = el("div", "score-line");
       line.appendChild(selectInput(curOpts, s.currency, function (v) { s.currency = v; softRefresh(); }));
       line.appendChild(numInput(s.value, function (v) { s.value = v; softRefresh(); }));
       var x = el("button", "mini-x", "✕");
       x.addEventListener("click", function () { scores.splice(i, 1); renderInspector(); });
       line.appendChild(x);
-      box.appendChild(line);
+      wrap.appendChild(line);
+      if (allowCond) {
+        // 조건 추가/제거는 캔버스의 "조건부" 뱃지도 즉시 갱신되도록 인스펙터+캔버스 함께 리프레시
+        var refreshBoth = function () { renderInspector(); renderCanvas(); autosave(); };
+        var hasCond = Array.isArray(s.requirements);
+        if (!hasCond) {
+          var addCond = el("span", "tree-add", "＋ 조건 (할인/조건부 비용)");
+          addCond.addEventListener("click", function () { s.requirements = []; refreshBoth(); });
+          wrap.appendChild(addCond);
+        } else {
+          var condBox = el("div", "score-cond-box");
+          var note = el("p", "empty-inspector", "이 조건을 만족할 때만 이 점수가 적용됩니다(예: 특정 선택 시 할인).");
+          note.style.cssText = "text-align:left;padding:2px;margin:0 0 4px;";
+          condBox.appendChild(note);
+          condBox.appendChild(reqEditor(s.requirements, refreshBoth));
+          var rmCond = el("button", "btn btn-sm danger", "조건 제거(항상 적용)");
+          rmCond.addEventListener("click", function () { delete s.requirements; refreshBoth(); });
+          condBox.appendChild(rmCond);
+          wrap.appendChild(condBox);
+        }
+        box.appendChild(wrap);
+      }
     });
     if (curOpts.length) {
       var add = el("button", "btn btn-sm", "＋ 점수");
@@ -2324,7 +2347,7 @@
         imageField(ch.image, function (val) { ch.image = val; softRefresh(); })
       ]));
       $inspector.appendChild(layoutEditor(ch, "choice"));
-      $inspector.appendChild(group("점수", [scoresEditor(ch.scores)]));
+      $inspector.appendChild(group("점수", [scoresEditor(ch.scores, true)]));
       $inspector.appendChild(group("효과 (변수 변경 — 선택 시)", [effectsEditor(ch.effects, true)]));
       $inspector.appendChild(multiEditor(ch));
       $inspector.appendChild(autoActivateEditor(ch));
@@ -2459,6 +2482,7 @@
       "<b>요구조건</b>으로 특정 선택/통화/변수 조건을 만족해야 고르거나 이동할 수 있게 만들어요(잠금·숨김). 자주 쓰는 조건 묶음은 <b>글로벌 요구조건</b>(설정)으로 저장해 재사용할 수 있어요.",
       "<b>그룹</b>(설정)으로 여러 행의 선택지를 묶으면 “능력 2개 이상” 같은 조건과 🎒 <b>백팩</b> 분류에 쓸 수 있어요.",
       "행 인스펙터의 <b>🎲 랜덤 선택</b>을 켜면 플레이어가 주사위로 무작위 선택을 굴릴 수 있어요.",
+      "선택지 <b>점수에 조건</b>을 달면 “특정 선택 시 할인/추가 비용”처럼 상황에 따라 값이 바뀌게 만들 수 있어요.",
       "플레이어는 뷰어에서 🎒 <b>백팩</b>(실시간 선택 요약·저장 슬롯)과 🌓 <b>밝기 전환</b>을 쓸 수 있어요.",
       "실수해도 <b>↩ 되돌리기(Ctrl+Z)</b>로 복구할 수 있어요(삭제·이동·수정 모두). ↪ 다시 실행은 Ctrl+Shift+Z.",
       "작업은 브라우저에 <b>자동 저장</b>돼요. 백업·다른 기기로 옮기려면 <b>저장(JSON)</b>으로 파일을 받으세요.",

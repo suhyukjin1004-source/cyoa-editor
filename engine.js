@@ -240,26 +240,59 @@
   }
   function isMulti(choice) { return !!(choice && choice.selectMultiple && choice.selectMultiple.enabled); }
 
-  /* ---------------- 통화 계산 ---------------- */
+  /* ---------------- 통화 계산 ----------------
+     점수 항목은 선택적으로 requirements 를 가질 수 있다(조건부 점수/할인).
+     조건이 통화 값을 참조할 수 있어 순진하게 계산하면 재귀가 생기므로 2-패스로 처리:
+       1패스) requirements 없는 무조건 항목만 합산 → base
+       2패스) 조건부 항목은 base 통화를 넘겨 평가(재계산 안 함)해 가산.
+     따라서 "통화 ≥ N" 같은 조건은 **할인 전(base) 값** 기준으로 판정된다(결정적). */
+  // 한 점수 항목이 지금 유효한지 — 조건 없으면 항상, 있으면 base 기준 평가.
+  function scoreEntryActive(s, project, state, baseTotals) {
+    if (!s.requirements || !s.requirements.length) return true;
+    return evaluateRequirements(s.requirements, project, state, baseTotals).ok;
+  }
+  // 한 선택지에서 지금 유효한 점수 항목만 반환(비용·표시 계산의 단일 소스).
+  function activeScores(choice, project, state, baseTotals) {
+    if (!choice || !choice.scores) return [];
+    return choice.scores.filter(function (s) { return scoreEntryActive(s, project, state, baseTotals); });
+  }
   function computeCurrencies(project, state) {
-    var totals = {};
+    var base = {};
     (project.currencies || []).forEach(function (c) {
-      totals[c.id] = (typeof c.start === "number" ? c.start : 0);
+      base[c.id] = (typeof c.start === "number" ? c.start : 0);
     });
     // 선택지 id→choice 맵을 한 번만 구성(선택마다 findChoice 전체 스캔하던 O(n²) 제거). 선택이 있을 때만 빌드.
-    var byId = null;
+    var byId = null, selectedRefs = [];
     state.selected.forEach(function (cid) {
       if (!byId) byId = buildChoiceMap(project);
-      var ch = byId[cid];
+      var ch = byId[cid]; if (!ch) return;
       var cnt = getCount(state, cid) || 1;
-      if (ch && ch.scores) ch.scores.forEach(function (s) {
-        if (totals[s.currency] === undefined) totals[s.currency] = 0;
-        totals[s.currency] += (Number(s.value) || 0) * cnt;
+      selectedRefs.push({ ch: ch, cnt: cnt });
+      // 1패스: 무조건 항목만
+      (ch.scores || []).forEach(function (s) {
+        if (s.requirements && s.requirements.length) return;
+        if (base[s.currency] === undefined) base[s.currency] = 0;
+        base[s.currency] += (Number(s.value) || 0) * cnt;
       });
     });
     Object.keys(state.eventScores || {}).forEach(function (cid) {
-      if (totals[cid] === undefined) totals[cid] = 0;
-      totals[cid] += Number(state.eventScores[cid]) || 0;
+      if (base[cid] === undefined) base[cid] = 0;
+      base[cid] += Number(state.eventScores[cid]) || 0;
+    });
+    // 조건부 항목이 하나도 없으면 base 가 곧 최종값(빠른 경로).
+    var hasConditional = selectedRefs.some(function (r) {
+      return (r.ch.scores || []).some(function (s) { return s.requirements && s.requirements.length; });
+    });
+    if (!hasConditional) return base;
+    // 2패스: 조건부 항목을 base 기준으로 평가해 가산.
+    var totals = {}; Object.keys(base).forEach(function (k) { totals[k] = base[k]; });
+    selectedRefs.forEach(function (r) {
+      (r.ch.scores || []).forEach(function (s) {
+        if (!s.requirements || !s.requirements.length) return;
+        if (!evaluateRequirements(s.requirements, project, state, base).ok) return;
+        if (totals[s.currency] === undefined) totals[s.currency] = 0;
+        totals[s.currency] += (Number(s.value) || 0) * r.cnt;
+      });
     });
     return totals;
   }
@@ -385,9 +418,10 @@
     var selected = isSelected(state, choice.id);
     var req = evaluateRequirements(choice.requirements, project, state, totals);
     // 예산: 이 선택지를 새로 고르면 음수 불가 통화가 0 미만이 되는가?
+    // 조건부 점수 항목은 지금 조건을 만족하는 것만 비용에 반영(현재 통화 기준 평가).
     var budgetReasons = [];
     if (!selected && choice.scores) {
-      choice.scores.forEach(function (s) {
+      activeScores(choice, project, state, totals).forEach(function (s) {
         if (currencyAllowsNeg(project, s.currency)) return;
         var after = (totals[s.currency] || 0) + (Number(s.value) || 0);
         if (after < 0) {
@@ -419,7 +453,7 @@
   function budgetOkForCount(project, state, choice, next) {
     var totals = computeCurrencies(project, state);
     var cur = getCount(state, choice.id), bad = false;
-    (choice.scores || []).forEach(function (s) {
+    activeScores(choice, project, state, totals).forEach(function (s) {
       if (currencyAllowsNeg(project, s.currency)) return;
       var delta = (Number(s.value) || 0) * (next - cur);
       if ((totals[s.currency] || 0) + delta < 0) bad = true;
@@ -744,15 +778,26 @@
     if (html != null) e.innerHTML = html;
     return e;
   }
-  function scoreTagsHTML(project, scores) {
+  // opts.state+opts.mode 를 주면 조건부 점수 항목을 처리:
+  //  play → 조건 충족 항목만 표시(할인/추가비용이 실제 반영된 것만).
+  //  edit → 전부 표시하되 조건부 항목엔 "조건부" 뱃지(작성자가 규칙을 본다).
+  function scoreTagsHTML(project, scores, opts) {
     if (!scores || !scores.length) return "";
+    opts = opts || {};
+    var base = (opts.state && opts.mode === "play") ? computeCurrencies(project, opts.state) : null;
     return scores.map(function (s) {
+      var conditional = !!(s.requirements && s.requirements.length);
+      if (conditional && opts.mode === "play") {
+        // 재생 중엔 조건 충족한 항목만 노출
+        if (!opts.state || !evaluateRequirements(s.requirements, project, opts.state, base).ok) return "";
+      }
       var cd = currencyDef(project, s.currency);
       var nm = cd ? cd.name : s.currency;
       var v = Number(s.value) || 0;
-      if (v === 0) return '<span class="score-tag">' + escapeHtml(nm) + ' 0</span>';
+      var badge = (conditional && opts.mode === "edit") ? '<span class="score-cond">조건부</span>' : "";
+      if (v === 0) return '<span class="score-tag">' + escapeHtml(nm) + ' 0' + badge + '</span>';
       var cls = v > 0 ? "gain" : "cost";
-      return '<span class="score-tag ' + cls + '">' + escapeHtml(nm) + " " + (v > 0 ? "+" : "") + v + "</span>";
+      return '<span class="score-tag ' + cls + '">' + escapeHtml(nm) + " " + (v > 0 ? "+" : "") + v + badge + "</span>";
     }).join("");
   }
   function currencyBadgesHTML(project, state) {
@@ -881,7 +926,7 @@
     var body = el("div", "choice-body");
     body.appendChild(el("div", "choice-title", escapeHtml(choice.title || "(제목 없음)")));
     if (choice.description) body.appendChild(el("div", "choice-desc", sanitizeHtml(formatRich(interpolate(choice.description, project, state), false))));
-    var sc = scoreTagsHTML(project, choice.scores);
+    var sc = scoreTagsHTML(project, choice.scores, { state: state, mode: opts.mode });
     if (sc) body.appendChild(el("div", "choice-scores", sc));
     if (st.locked && st.reasons.length) body.appendChild(el("div", "lock-reason", escapeHtml(st.reasons.join(", "))));
     if (multi) {
@@ -1256,7 +1301,7 @@
         var bd = el("div", "backpack-item-body");
         var cnt = getCount(state, c.id) || 1;
         bd.appendChild(el("div", "backpack-item-title", escapeHtml(c.title || "(제목 없음)") + (cnt > 1 ? ' <span class="backpack-count">×' + cnt + "</span>" : "")));
-        var sc = scoreTagsHTML(project, c.scores);
+        var sc = scoreTagsHTML(project, c.scores, { state: state, mode: "play" });
         if (sc) bd.appendChild(el("div", "backpack-item-scores", sc));
         it.appendChild(bd);
         if (opts.onRemove) {
@@ -1410,10 +1455,11 @@
           _font(ctx, "bold", 18, fam);
           var tlines = _wrap(ctx, (c.title || "") + (cnt > 1 ? "  ×" + cnt : ""), twAvail, 2), ty = yy + 13;
           tlines.forEach(function (ln) { if (draw) { ctx.fillStyle = col.text; ctx.fillText(ln, tx, ty); } ty += 24; });
-          if (c.scores && c.scores.length) {
+          var shownScores = activeScores(c, project, state, totals); // 조건부 항목은 충족한 것만
+          if (shownScores.length) {
             _font(ctx, "600", 13, fam);
             var sx = tx;
-            c.scores.forEach(function (s) {
+            shownScores.forEach(function (s) {
               var cd = currencyDef(project, s.currency); var nm = cd ? cd.name : s.currency;
               var val = (Number(s.value) || 0) * cnt; var stxt = nm + " " + (val > 0 ? "+" : "") + val;
               var sw = ctx.measureText(stxt).width + 14;
