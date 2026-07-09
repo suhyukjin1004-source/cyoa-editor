@@ -973,16 +973,25 @@
     if (choice.image) {
       var L = choice.layout || {};
       var pos = L.imagePos || "top";
-      node.classList.add("ci-" + pos);
-      var im = el("img", "choice-img"); im.src = choice.image; im.alt = choice.title || ""; im.loading = "lazy";
-      var h = Number(L.imageHeight) || 0;
-      if (h > 0) im.style.height = h + "px";
-      if (pos === "left" || pos === "right") {
-        var w = Number(L.imageWidth) || 40;
-        im.style.flex = "0 0 " + w + "%"; im.style.width = w + "%";
+      if (pos === "background") {
+        // 배경 템플릿: 이미지가 카드 전체를 채우고 텍스트가 위에 오버레이(스크림은 CSS).
+        node.classList.add("ci-background");
+        node.style.backgroundImage = "url(" + JSON.stringify(choice.image) + ")";
+        var bh = Number(L.imageHeight) || 0;
+        if (bh > 0) node.style.minHeight = bh + "px";
+        node.appendChild(body);
+      } else {
+        node.classList.add("ci-" + pos);
+        var im = el("img", "choice-img"); im.src = choice.image; im.alt = choice.title || ""; im.loading = "lazy";
+        var h = Number(L.imageHeight) || 0;
+        if (h > 0) im.style.height = h + "px";
+        if (pos === "left" || pos === "right") {
+          var w = Number(L.imageWidth) || 40;
+          im.style.flex = "0 0 " + w + "%"; im.style.width = w + "%";
+        }
+        if (pos === "bottom" || pos === "right") { node.appendChild(body); node.appendChild(im); }
+        else { node.appendChild(im); node.appendChild(body); }
       }
-      if (pos === "bottom" || pos === "right") { node.appendChild(body); node.appendChild(im); }
-      else { node.appendChild(im); node.appendChild(body); }
     } else {
       node.appendChild(body);
     }
@@ -1002,6 +1011,8 @@
     node.dataset.rowId = row.id;
     var L = normalizeBlockLayout(row.layout, "row");
     node.style.setProperty("--block-gap", L.blockGap + "px");
+    // 행 배경 이미지(선택) — 행 전체 뒤에 깔고, 위에 테마색 스크림으로 가독성 확보(CSS).
+    if (row.bgImage) { node.classList.add("has-bg"); node.style.backgroundImage = "url(" + JSON.stringify(row.bgImage) + ")"; }
     if (opts.mode === "edit" && opts.editSelectedId === row.id) node.classList.add("editing");
     var head = el("div", "row-head");
     head.appendChild(el("h3", "row-title", escapeHtml(row.title || "(행)")));

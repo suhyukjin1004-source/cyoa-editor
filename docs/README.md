@@ -98,7 +98,8 @@ python3 -m http.server 8765
   - **리사이즈·압축**: 출력 **최대 너비**·**형식(WebP/JPEG/PNG)**·**품질** 조절. **예상 용량(KB)** 을 실시간 표시 → **project.json 용량을 크게 줄일 수 있습니다.** 기본값(최대 1600px·품질 0.85)만으로도 큰 원본이 자동으로 작아집니다.
   - 형식 참고: WebP는 작고 투명 지원(Chrome·Firefox). **Safari는 WebP 인코딩을 지원하지 않아 자동으로 PNG로 저장**됩니다. 투명이 필요 없으면 JPEG가 가장 작습니다.
 - **이미지 배치(Layout)** — 페이지·행·**선택지** 인스펙터에 **이미지 배치** 항목이 있습니다. 페이지·행은 캔버스에서 이미지 위치/크기와 간격 핸들을 직접 드래그할 수도 있습니다.
-  - `위치`: 텍스트 기준 **위 / 아래 / 왼쪽 / 오른쪽** (왼쪽·오른쪽이면 이미지와 글이 나란히 배치)
+  - `위치`: 텍스트 기준 **위 / 아래 / 왼쪽 / 오른쪽** (왼쪽·오른쪽이면 이미지와 글이 나란히 배치). **선택지**는 추가로 **배경(카드 전체)** 을 고를 수 있어, 이미지가 카드를 꽉 채우고 제목·설명이 그 위에 오버레이됩니다(어두운 스크림으로 가독성 유지 — r/makeyourchoice 스타일). 이때 `높이 px`가 카드 최소 높이가 됩니다.
+  - **행 배경 이미지**: 행 인스펙터의 **「행 배경 이미지」** 는 행 전체 뒤에 깔리는 배경입니다(테마색 스크림으로 글이 묻히지 않게). 행의 일반 `이미지`(콘텐츠 이미지)와는 별개입니다.
   - `너비 %`: 이미지 크기(가로). 좌/우 배치에서는 옆 칸의 너비. (선택지 카드는 좌/우 배치에서 적용)
   - `높이 px`: 페이지·행은 `0`=원본 비율, 값=그 높이로 잘라 표시. 선택지 카드는 `0`=표준 높이, 값=지정 높이.
   - 페이지·행 전용: `이미지-텍스트 간격`, `제목-콘텐츠 간격`, `콘텐츠-선택지 간격`, `이미지 정렬`, `텍스트 상자 폭/위치`, `텍스트 정렬`을 숫자·버튼·캔버스 핸들로 조정합니다.
@@ -242,6 +243,7 @@ python3 -m http.server 8765
       "links": [ { "label": "다음", "target": "p2", "requirements": [], "scores": [] } ] },
     { "id": "p2", "title": "", "type": "build",
       "rows": [ { "id": "r1", "title": "", "description": "", "image": null,
+        "bgImage": null,                      // (선택) 행 전체 배경 이미지(데이터 URL·경로)
         "random": { "enabled": false, "label": "운명을 굴려라" },
         "layout": { "imagePos": "top", "imageWidth": 100, "imageHeight": 0,
                     "imageGap": 8, "imageAlign": "center",
@@ -249,6 +251,7 @@ python3 -m http.server 8765
                     "blockGap": 10 },
         "select": { "mode": "single", "min": 1, "max": 1 }, "columns": 3,
         "choices": [ { "id": "c1", "title": "", "description": "", "image": null,
+          "layout": { "imagePos": "top" },     // 선택지 이미지 위치. "background"면 카드 전체 배경+텍스트 오버레이
           "groups": [ "power" ],
           "scores": [ { "currency": "pt", "value": -20 },
                       { "currency": "pt", "value": 10, "requirements": [ { "kind": "choice", "id": "warrior", "mode": "selected" } ] } ],

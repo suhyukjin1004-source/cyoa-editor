@@ -2153,10 +2153,12 @@
     var pos = L.imagePos || "top";
     var width = (L.imageWidth == null ? (isChoice ? 40 : 100) : L.imageWidth);
     var height = (L.imageHeight == null ? 0 : L.imageHeight);
-    var posSel = selectInput([
+    var posOpts = [
       { value: "top", label: "위 (텍스트 위)" }, { value: "bottom", label: "아래 (텍스트 아래)" },
       { value: "left", label: "왼쪽 (텍스트 옆)" }, { value: "right", label: "오른쪽 (텍스트 옆)" }
-    ], pos, function (v) {
+    ];
+    if (isChoice) posOpts.push({ value: "background", label: "배경 (카드 전체 + 텍스트 오버레이)" });
+    var posSel = selectInput(posOpts, pos, function (v) {
       setL("imagePos", v);
       if (!isChoice) {
         if ((v === "left" || v === "right") && obj.layout.imageWidth >= 90) setL("imageWidth", 45);
@@ -2402,6 +2404,12 @@
         field("열 수", numInput(rrow.columns || 3, function (v) { rrow.columns = v || 1; softRefresh(); })),
         imageField(rrow.image, function (val) { rrow.image = val; softRefresh(); })
       ])));
+      var bgWrap = el("div");
+      bgWrap.appendChild(imageField(rrow.bgImage, function (val) { rrow.bgImage = val || null; softRefresh(); }));
+      var bgNote = el("p", "empty-inspector", "행 전체 뒤에 깔리는 배경 이미지입니다(테마색 스크림으로 가독성 유지). 위 ‘이미지’와 별개예요.");
+      bgNote.style.cssText = "text-align:left;padding:2px;margin:2px 0 0;line-height:1.5;";
+      bgWrap.appendChild(bgNote);
+      $inspector.appendChild(group("행 배경 이미지 (선택)", [bgWrap]));
       $inspector.appendChild(randomEditor(rrow));
       $inspector.appendChild(layoutEditor(rrow, "row"));
       return;

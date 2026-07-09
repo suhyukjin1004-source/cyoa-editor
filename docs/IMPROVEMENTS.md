@@ -36,9 +36,9 @@
 4. **조건부 점수(코스트 할인/수정자)** — ICCPlus의 "행 할인" 개념을 일반화. 점수 항목에 선택적 `requirements`를 달면 조건 충족 시에만 적용(할인·조건부 비용·조건부 보상). 통화 참조 조건의 재귀를 막기 위해 통화 계산을 2-패스(무조건→base, 조건부는 base로 평가)로 구현. 재생 중엔 활성 항목만 표시.
 5. **IndexedDB 자동저장(B)** — 에디터 자동저장(이미지 내장으로 커짐)을 localStorage(~5MB)에서 IndexedDB(수백 MB급)로 전환. 미지원 환경은 localStorage 폴백, 기존 localStorage 자동저장은 첫 로드 시 1회 자동 이관 후 정리. 300ms 디바운스 + beforeunload flush. (뷰어 저장 슬롯·진행은 빌드코드=선택상태만이라 작아서 localStorage 유지.)
 6. **웹폰트 URL(C)** — 설정 → 테마에 `fontUrl`(웹폰트 스타일시트 URL) 추가. `applyTheme`가 별도 `#cyoa-font-face` `<style>`에 `@import url("…")` 주입, 폰트 이름은 기존 `font` 칸. 보안: `safeFontUrl`이 **https 스타일시트 URL만** 허용하고 `"'()<> \` 공백 등을 배제해 `url()` 컨텍스트 탈출·CSS 주입을 차단(프로토콜상대는 https로 승격, http·javascript는 거부).
+7. **이미지 템플릿(D)** — 선택지 `layout.imagePos: "background"`(이미지가 카드 전체를 채우고 제목·설명이 스크림 위에 오버레이 — r/makeyourchoice 스타일)와 행 `bgImage`(행 전체 배경, 테마색 스크림). 배경 URL은 `element.style.backgroundImage`에 `JSON.stringify`로 넣어 단일 속성 대입 → CSS 규칙 주입 불가. **이로써 ICC/ICCPlus 이식 후보 A·B·C·D 모두 완료.**
 
 ## 후속 과제 (이번 범위 제외)
 
-- **D. 선택지 이미지 템플릿/행 배경 이미지** (ICCPlus): 카드 이미지 표시 프리셋과 행 배경 등 외형 옵션 확장. **남은 ICC 후보 중 마지막.**
-- **검색/목차 내비게이션**: 수천 선택지 규모 작품에서 필수. 스크롤형 목차(페이지 점프) + 선택지 제목 검색 오버레이.
+- **검색/목차 내비게이션**: 수천 선택지 규모 작품에서 필수. 스크롤형 목차(페이지 점프) + 선택지 제목 검색 오버레이. (ICC 후보를 모두 소진했으므로, 다음 개선은 이쪽이 유력.)
 - (참고) ICC2(intcyoacreator)는 **라이선스가 없어 코드 복사 불가**, ICCPlus는 MIT지만 Svelte라 어차피 개념 재구현이 유일한 경로. YouTube BGM은 본 툴의 파일/URL BGM으로 대체 가능해 보류.

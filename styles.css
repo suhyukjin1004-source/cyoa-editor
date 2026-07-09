@@ -214,6 +214,29 @@ a { color: var(--accent); }
 .choice.ci-left, .choice.ci-right { flex-direction: row; align-items: stretch; }
 .choice.ci-left > .choice-img, .choice.ci-right > .choice-img { height: auto; min-height: 100%; align-self: stretch; }
 .choice.ci-left > .choice-body, .choice.ci-right > .choice-body { min-width: 0; }
+/* 배경 템플릿: 이미지가 카드 전체를 채우고 텍스트가 위에 오버레이 */
+.choice.ci-background {
+  position: relative; overflow: hidden;
+  min-height: 160px; display: flex; align-items: flex-end;
+  background-size: cover; background-position: center; color: #fff;
+}
+.choice.ci-background::before {
+  content: ""; position: absolute; inset: 0; z-index: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, .78), rgba(0, 0, 0, .28) 55%, rgba(0, 0, 0, .12));
+}
+.choice.ci-background > .choice-body { position: relative; z-index: 1; width: 100%; }
+.choice.ci-background .choice-title { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+.choice.ci-background .choice-desc { color: rgba(255, 255, 255, .9); }
+/* 행 배경 이미지: 뒤에 깔고 테마색 스크림으로 가독성 확보 */
+.cyoa-row.has-bg {
+  background-size: cover; background-position: center;
+  border-radius: 14px; padding: 16px; overflow: hidden;
+}
+.cyoa-row.has-bg::before {
+  content: ""; position: absolute; inset: 0; z-index: 0;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+.cyoa-row.has-bg > * { position: relative; z-index: 1; }
 @media (max-width: 460px) {
   .choice.ci-left, .choice.ci-right { flex-direction: column; }
   .choice.ci-left > .choice-img, .choice.ci-right > .choice-img { width: 100% !important; flex-basis: auto !important; height: var(--row-img-height); }
