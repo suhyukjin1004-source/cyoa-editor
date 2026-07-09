@@ -2815,6 +2815,13 @@
       themeColor("배경", "bg"), themeColor("글자", "text"), themeColor("강조(accent)", "accent"),
       themeColor("카드 배경", "card"), themeColor("카드 테두리", "cardBorder"),
       field("폰트", textInput(st.font, function (v) { st.font = v; applyLiveTheme(); autosave(); }, "system-ui, Georgia, ...")),
+      (function () {
+        var f = field("웹폰트 URL (선택)", textInput(st.fontUrl, function (v) { st.fontUrl = v; applyLiveTheme(); autosave(); }, "https://fonts.googleapis.com/css2?family=..."));
+        var hint = el("p", "empty-inspector", "구글 폰트 등 <b>폰트 스타일시트 URL</b>(https)을 넣고, 위 ‘폰트’ 칸에 그 폰트 이름을 적으면 적용됩니다. 예: URL은 Google Fonts의 링크, 폰트는 <code>'Noto Sans KR', sans-serif</code>.");
+        hint.style.cssText = "text-align:left;padding:2px;margin:2px 0 0;line-height:1.5;";
+        f.appendChild(hint);
+        return f;
+      })(),
       (function () { var w = el("div", "row2");
         w.appendChild(field("최대 폭(px)", numInput(st.maxWidth, function (v) { st.maxWidth = v; applyLiveTheme(); autosave(); })));
         w.appendChild(field("이미지 높이(px)", numInput(st.rowImageHeight, function (v) { st.rowImageHeight = v; applyLiveTheme(); autosave(); })));

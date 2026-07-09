@@ -655,6 +655,7 @@
     if (out.card == null) out.card = "#1a1b22";
     if (out.cardBorder == null) out.cardBorder = "#33343d";
     if (out.font == null) out.font = "system-ui";
+    if (out.fontUrl == null) out.fontUrl = ""; // 웹폰트 스타일시트 URL(예: Google Fonts)
     out.maxWidth = clampNum(out.maxWidth, 560, 1800, 980);
     out.rowImageHeight = clampNum(out.rowImageHeight, 80, 720, 200);
     out.layoutPreset = pick(out.layoutPreset, ["default", "wide", "card", "compact"], "default");
@@ -712,6 +713,16 @@
     if (style.layoutPreset === "compact") return Math.min(base, 760);
     return base;
   }
+  // 웹폰트 URL 검증: https 스타일시트 URL만 허용하고, url("…") 컨텍스트를 깨뜨릴
+  // 문자("' ()<> \ 공백·제어문자)는 배제 → CSS 주입(임의 규칙 삽입) 차단. 실패 시 "".
+  function safeFontUrl(v) {
+    if (typeof v !== "string") return "";
+    var s = v.trim();
+    if (/^\/\//.test(s)) s = "https:" + s;       // 프로토콜 상대 → https
+    if (!/^https:\/\//i.test(s)) return "";        // https 만(외부 폰트 CDN)
+    if (/["'()<>\\\s]/.test(s)) return "";         // url() 탈출·CSS 주입 방지
+    return s;
+  }
   function applyTheme(style, rootEl) {
     style = normalizeStyle(style);
     var r = (rootEl || document.documentElement).style;
@@ -732,6 +743,11 @@
       root.dataset.pageTransition = style.pageTransition;
       root.dataset.transitionSpeed = style.transitionSpeed;
     }
+    // 웹폰트 @import 는 별도 <style> 에(@import 는 규칙 맨 앞이어야 함).
+    var fEl = document.getElementById("cyoa-font-face");
+    if (!fEl) { fEl = document.createElement("style"); fEl.id = "cyoa-font-face"; document.head.appendChild(fEl); }
+    var furl = safeFontUrl(style.fontUrl);
+    fEl.textContent = furl ? ('@import url("' + furl + '");') : "";
     var sEl = document.getElementById("cyoa-custom-css");
     if (!sEl) { sEl = document.createElement("style"); sEl.id = "cyoa-custom-css"; document.head.appendChild(sEl); }
     sEl.textContent = style.customCss || "";
@@ -1532,7 +1548,7 @@
       meta: { id: genId("proj"), title: "새 CYOA", author: "", description: "", lang: "ko" },
       start: { title: "", subtitle: "", text: "", buttonLabel: "", image: null, imageMode: "card", layout: defaultStartLayout() },
       settings: { flow: "paged", startPageId: pid, allowNegativeCurrency: false, showLockedChoices: true, enableBuildCode: true, allowBrightnessToggle: true },
-      style: { bg: "#0e0f14", text: "#e9e9ef", accent: "#d8b25a", card: "#1a1b22", cardBorder: "#33343d", font: "system-ui", rowImageHeight: 200, maxWidth: 980, layoutPreset: "default", choicePreset: "card", pageTransition: "none", transitionSpeed: "normal", customCss: "" },
+      style: { bg: "#0e0f14", text: "#e9e9ef", accent: "#d8b25a", card: "#1a1b22", cardBorder: "#33343d", font: "system-ui", fontUrl: "", rowImageHeight: 200, maxWidth: 980, layoutPreset: "default", choicePreset: "card", pageTransition: "none", transitionSpeed: "normal", customCss: "" },
       currencies: [{ id: "pt", name: "포인트", start: 100, color: "#d8b25a", allowNegative: false }],
       variables: [],
       groups: [],
@@ -1543,7 +1559,7 @@
 
   /* ---------------- 노출 ---------------- */
   global.CYOA = {
-    genId: genId, escapeHtml: escapeHtml, safeColor: safeColor, clone: clone, sanitizeHtml: sanitizeHtml,
+    genId: genId, escapeHtml: escapeHtml, safeColor: safeColor, safeFontUrl: safeFontUrl, clone: clone, sanitizeHtml: sanitizeHtml,
     interpolate: interpolate, resolveWord: resolveWord,
     findPage: findPage, findChoice: findChoice, findRowOfChoice: findRowOfChoice,
     allChoices: allChoices, currencyDef: currencyDef, variableDef: variableDef,

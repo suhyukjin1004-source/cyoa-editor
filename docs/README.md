@@ -85,6 +85,7 @@ python3 -m http.server 8765
   - **링크 숨김**: 이동 링크 인스펙터의 **「조건 미충족 시 숨김」** 체크 시, 요구조건을 만족하기 전까지 그 **버튼이 보이지 않습니다**(만족하면 나타남). “숨겨진 분기/통로”를 만들 때 사용. 편집 화면에서는 🙈 표식과 함께 보입니다.
 - **순서 변경** — 트리의 `⋮⋮` 핸들로 페이지·행·선택지·이동 링크를 드래그해 순서를 바꿀 수 있습니다. 캔버스에서도 행·선택지·이동 링크의 `⋮⋮` 핸들을 드래그해 같은 부모 안에서 재정렬할 수 있습니다.
 - **개인화** — 설정 모달의 **「개인화」** 에서 전체 레이아웃, 선택지 형태, 페이지 전환 효과와 속도를 고를 수 있습니다. 선택한 값은 공유 뷰어와 내보내기에도 반영됩니다.
+- **웹폰트** — 설정 → 테마 → **「웹폰트 URL」** 에 구글 폰트 등 **폰트 스타일시트 URL(https)** 을 넣고, 「폰트」 칸에 그 폰트 이름(예: `'Noto Sans KR', sans-serif`)을 적으면 작품 전체에 적용됩니다. URL은 `project.json`에 저장돼 내보내기에도 포함됩니다. (보안상 https 스타일시트 URL만 허용하고, CSS 주입을 막기 위해 특수문자가 든 URL은 무시합니다.)
 - **배경 음악(BGM)** — 페이지 인스펙터의 **「배경 음악(BGM)」** 에서 오디오를 지정합니다.
   - **오디오 파일 업로드**(프로젝트에 내장, 작은 파일 권장) 또는 **URL/경로**(예: `audio/theme.mp3`, neocities `audio/` 폴더에 올린 파일) 둘 다 지원.
   - 음악을 지정한 페이지에 들어가면 그 곡이 재생되고, **음악이 없는 페이지는 이전 곡을 이어서** 재생합니다. 특정 페이지에서 멈추려면 **「이 페이지에서 음악 정지」** 를 체크하세요.
@@ -223,7 +224,8 @@ python3 -m http.server 8765
   "settings": { "flow": "paged|scroll", "startPageId": "", "allowNegativeCurrency": false,
                 "showLockedChoices": true, "enableBuildCode": true, "allowBrightnessToggle": true },
   "style": { "bg": "#…", "text": "#…", "accent": "#…", "card": "#…", "cardBorder": "#…",
-             "font": "system-ui", "rowImageHeight": 200, "maxWidth": 980, "customCss": "" },
+             "font": "system-ui", "fontUrl": "", "rowImageHeight": 200, "maxWidth": 980, "customCss": "" },
+             // fontUrl: 웹폰트 스타일시트 URL(https만). 예: Google Fonts. font 칸엔 그 폰트 이름을 적음
   "currencies": [ { "id": "pt", "name": "포인트", "start": 100, "color": "#d8b25a", "allowNegative": false } ],
   "variables": [ { "id": "brave", "name": "용기", "type": "number|flag", "initial": 0 } ],
   "groups": [ { "id": "power", "name": "능력" } ],                          // 선택지 태그(요구조건·백팩 분류)
