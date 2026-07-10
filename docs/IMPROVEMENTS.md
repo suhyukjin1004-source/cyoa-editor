@@ -37,8 +37,10 @@
 5. **IndexedDB 자동저장(B)** — 에디터 자동저장(이미지 내장으로 커짐)을 localStorage(~5MB)에서 IndexedDB(수백 MB급)로 전환. 미지원 환경은 localStorage 폴백, 기존 localStorage 자동저장은 첫 로드 시 1회 자동 이관 후 정리. 300ms 디바운스 + beforeunload flush. (뷰어 저장 슬롯·진행은 빌드코드=선택상태만이라 작아서 localStorage 유지.)
 6. **웹폰트 URL(C)** — 설정 → 테마에 `fontUrl`(웹폰트 스타일시트 URL) 추가. `applyTheme`가 별도 `#cyoa-font-face` `<style>`에 `@import url("…")` 주입, 폰트 이름은 기존 `font` 칸. 보안: `safeFontUrl`이 **https 스타일시트 URL만** 허용하고 `"'()<> \` 공백 등을 배제해 `url()` 컨텍스트 탈출·CSS 주입을 차단(프로토콜상대는 https로 승격, http·javascript는 거부).
 7. **이미지 템플릿(D)** — 선택지 `layout.imagePos: "background"`(이미지가 카드 전체를 채우고 제목·설명이 스크림 위에 오버레이 — r/makeyourchoice 스타일)와 행 `bgImage`(행 전체 배경, 테마색 스크림). 배경 URL은 `element.style.backgroundImage`에 `JSON.stringify`로 넣어 단일 속성 대입 → CSS 규칙 주입 불가. **이로써 ICC/ICCPlus 이식 후보 A·B·C·D 모두 완료.**
+8. **규칙 실행 기록(플레이 trace) — BranchCanvas 벤치마킹** — 뷰어/미리보기에 📜 패널 추가. 선택·이동·랜덤마다 "무엇이 왜 바뀌었나"(자원 증감·자동 선택/해제 연쇄·잠금 이유)를 시간순 표시. 설계: 순수 규칙 엔진은 무수정, 호스트가 액션 전후를 `snapshotForTrace`로 캡처해 `buildTraceEntries`(순수)로 diff → 회귀 위험 0. 잠긴 선택지 클릭 노출을 위해 `renderChoice`에 옵셔널 `onLocked` 콜백 1줄만 추가(콜백 없으면 기존 동작 동일). 기록은 세션 한정(저장·빌드코드 미포함).
 
 ## 후속 과제 (이번 범위 제외)
 
-- **검색/목차 내비게이션**: 수천 선택지 규모 작품에서 필수. 스크롤형 목차(페이지 점프) + 선택지 제목 검색 오버레이. (ICC 후보를 모두 소진했으므로, 다음 개선은 이쪽이 유력.)
+- **BranchCanvas 벤치마킹 잔여 후보**: 페이지/섹션 빠른 시작 템플릿, 접근성(ARIA·키보드·포커스) 패스, 실제 웹 배포(GitHub Pages 활성화). 문장형 규칙 요약도 초보자 친화 후보.
+- **검색/목차 내비게이션**: 수천 선택지 규모 작품에서 필수. 스크롤형 목차(페이지 점프) + 선택지 제목 검색 오버레이.
 - (참고) ICC2(intcyoacreator)는 **라이선스가 없어 코드 복사 불가**, ICCPlus는 MIT지만 Svelte라 어차피 개념 재구현이 유일한 경로. YouTube BGM은 본 툴의 파일/URL BGM으로 대체 가능해 보류.

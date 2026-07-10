@@ -606,6 +606,60 @@
     return null;
   }
 
+  /* ---------------- 규칙 실행 기록(플레이 trace) 헬퍼 ----------------
+     순수 함수: 호스트(뷰어/미리보기)가 액션 전후 상태를 스냅샷·비교해 "무엇이 왜 바뀌었나"를
+     사람이 읽을 항목으로 만든다. 규칙 엔진 자체는 건드리지 않는다(회귀 위험 0). */
+  function snapshotForTrace(project, state) {
+    return { currencies: computeCurrencies(project, state), selected: (state.selected || []).slice() };
+  }
+  function _choiceTitle(project, id) {
+    var c = findChoice(project, id);
+    return c ? (c.title || "(제목 없음)") : id;
+  }
+  // action.kind: "select" | "count" | "navigate" | "back" | "roll" | "locked"
+  // 반환: { icon, head, changes:[문자열…] }  (호스트가 렌더)
+  function buildTraceEntries(project, before, after, action) {
+    before = before || { currencies: {}, selected: [] };
+    after = after || { currencies: {}, selected: [] };
+    var head = "", icon = "•", changes = [];
+    var cid = action && action.choiceId;
+    if (action.kind === "locked") {
+      icon = "🔒";
+      head = "선택 불가: '" + _choiceTitle(project, cid) + "'";
+      if (action.reasons && action.reasons.length) changes.push(action.reasons.join(", "));
+      return { icon: icon, head: head, changes: changes };
+    }
+    if (action.kind === "navigate") {
+      icon = "➡"; var pg = findPage(project, action.to);
+      head = "이동: " + (pg ? (pg.title || "(페이지)") : action.to);
+    } else if (action.kind === "back") {
+      icon = "↩"; var bp = findPage(project, action.to);
+      head = "뒤로: " + (bp ? (bp.title || "(페이지)") : action.to);
+    } else if (action.kind === "roll") {
+      icon = "🎲";
+      head = cid ? ("랜덤 선택: '" + _choiceTitle(project, cid) + "'" + (action.rowTitle ? " (" + action.rowTitle + ")" : "")) : "랜덤: 굴릴 수 있는 선택지 없음";
+    } else if (action.kind === "count") {
+      icon = "🔢";
+      var was = (before.selected.indexOf(cid) !== -1);
+      head = "'" + _choiceTitle(project, cid) + "' 수량 " + (action.delta > 0 ? "+1" : "−1");
+    } else { // select (토글)
+      var nowSel = (after.selected.indexOf(cid) !== -1);
+      icon = nowSel ? "✔" : "✖";
+      head = "'" + _choiceTitle(project, cid) + "' " + (nowSel ? "선택" : "해제");
+    }
+    // 자원(통화) 변화
+    (project.currencies || []).forEach(function (c) {
+      var d = (after.currencies[c.id] || 0) - (before.currencies[c.id] || 0);
+      if (d !== 0) changes.push(c.name + " " + (d > 0 ? "+" : "−") + Math.abs(d));
+    });
+    // 연쇄 자동 선택/해제(클릭 대상 제외)
+    var beforeSet = {}; before.selected.forEach(function (id) { beforeSet[id] = true; });
+    var afterSet = {}; after.selected.forEach(function (id) { afterSet[id] = true; });
+    after.selected.forEach(function (id) { if (!beforeSet[id] && id !== cid) changes.push("자동 선택: '" + _choiceTitle(project, id) + "'"); });
+    before.selected.forEach(function (id) { if (!afterSet[id] && id !== cid) changes.push("자동 해제: '" + _choiceTitle(project, id) + "'"); });
+    return { icon: icon, head: head, changes: changes };
+  }
+
   /* ---------------- 선택 요약(백팩·결과 이미지 공용) ----------------
      행 순서대로 선택된 선택지를 구조화해 반환: [{ row, title, choices:[choice…] }] */
   function collectBuildSummary(project, state) {
@@ -998,7 +1052,7 @@
 
     node.addEventListener("click", function () {
       if (opts.mode === "edit") { if (opts.onEditSelect) opts.onEditSelect("choice", choice.id); return; }
-      if (st.locked) return;
+      if (st.locked) { if (opts.onLocked) opts.onLocked(choice.id, st.reasons); return; } // 잠긴 선택지 클릭을 호스트가 기록할 수 있게(콜백 없으면 기존과 동일)
       if (multi) return; // 다중 선택지는 스테퍼(− N +)로만 조작
       if (opts.onToggle) opts.onToggle(choice.id);
     });
@@ -1577,6 +1631,7 @@
     computeVars: computeVars,
     groupDef: groupDef, globalReqDef: globalReqDef, countGroupSelected: countGroupSelected,
     rollRandomChoice: rollRandomChoice, collectBuildSummary: collectBuildSummary, invertStyle: invertStyle,
+    snapshotForTrace: snapshotForTrace, buildTraceEntries: buildTraceEntries,
     backpackCategories: backpackCategories, renderBackpackPanel: renderBackpackPanel,
     newState: newState, isSelected: isSelected, getCount: getCount, isMulti: isMulti,
     computeCurrencies: computeCurrencies, evaluateRequirements: evaluateRequirements,

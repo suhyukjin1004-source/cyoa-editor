@@ -1335,6 +1335,15 @@
      우측 플레이어 미리보기
      ========================================================= */
   var _pvPackOpen = false;              // 미리보기 백팩 오버레이 표시
+  var _pvTraceOpen = false, _pvTraceLog = []; // 미리보기 규칙 기록(세션 한정)
+  var PV_TRACE_MAX = 120;
+  function recordPvTrace(action, before) {
+    var after = C.snapshotForTrace(project, pstate);
+    var e = C.buildTraceEntries(project, before, after, action);
+    if (!e || (!e.head && !(e.changes && e.changes.length))) return;
+    _pvTraceLog.unshift({ ts: Date.now(), icon: e.icon, head: e.head, changes: e.changes });
+    if (_pvTraceLog.length > PV_TRACE_MAX) _pvTraceLog.length = PV_TRACE_MAX;
+  }
   function previewUsesStartScreen() {
     return !(project.settings && project.settings.startScreen === false);
   }
@@ -1376,6 +1385,7 @@
     pstate = C.newState(project);
     previewStarted = true;
     _pvSrc = null;
+    _pvTraceLog.length = 0;
     if (_pvAudio) _pvAudio.pause();
     renderPreviewPanel({ scrollTop: 0, animatePage: true });
   }
@@ -1409,8 +1419,13 @@
     var pack = el("button", "btn btn-sm", "🎒");
     pack.title = "백팩 (선택 요약)";
     if (_pvPackOpen) pack.classList.add("primary");
-    pack.addEventListener("click", function () { _pvPackOpen = !_pvPackOpen; renderPreviewPanel({ preserveScroll: true }); });
+    pack.addEventListener("click", function () { _pvPackOpen = !_pvPackOpen; if (_pvPackOpen) _pvTraceOpen = false; renderPreviewPanel({ preserveScroll: true }); });
     tools.appendChild(pack);
+    var trace = el("button", "btn btn-sm", "📜");
+    trace.title = "규칙 기록 (무엇이 왜 바뀌었나)";
+    if (_pvTraceOpen) trace.classList.add("primary");
+    trace.addEventListener("click", function () { _pvTraceOpen = !_pvTraceOpen; if (_pvTraceOpen) _pvPackOpen = false; renderPreviewPanel({ preserveScroll: true }); });
+    tools.appendChild(trace);
     var image = el("button", "btn btn-sm", "🖼");
     image.title = "결과 이미지";
     image.addEventListener("click", function () {
@@ -1460,25 +1475,39 @@
       mode: "play",
       onToggle: function (id) {
         var top = capturePreviewScroll();
+        var b = C.snapshotForTrace(project, pstate);
         C.toggleChoice(project, pstate, id);
+        recordPvTrace({ kind: "select", choiceId: id }, b);
         renderPreviewPanel({ scrollTop: top });
       },
       onCount: function (id, delta) {
         var top = capturePreviewScroll();
+        var b = C.snapshotForTrace(project, pstate);
         C.changeCount(project, pstate, id, delta);
+        recordPvTrace({ kind: "count", choiceId: id, delta: delta }, b);
         renderPreviewPanel({ scrollTop: top });
       },
+      onLocked: function (id, reasons) {
+        recordPvTrace({ kind: "locked", choiceId: id, reasons: reasons }, C.snapshotForTrace(project, pstate));
+        if (_pvTraceOpen) renderPreviewPanel({ preserveScroll: true }); else toast("이 선택지는 지금 고를 수 없어요 — 📜 규칙 기록에서 이유 확인");
+      },
       onNavigate: function (link) {
+        var b = C.snapshotForTrace(project, pstate); var from = pstate.currentPageId;
         C.navigate(project, pstate, link);
+        recordPvTrace({ kind: "navigate", to: pstate.currentPageId, from: from }, b);
         renderPreviewPanel({ scrollTop: 0, animatePage: true });
       },
       onBack: function () {
+        var b = C.snapshotForTrace(project, pstate);
         C.goBack(pstate);
+        recordPvTrace({ kind: "back", to: pstate.currentPageId }, b);
         renderPreviewPanel({ scrollTop: 0, animatePage: true });
       },
       onRoll: function (row) {
         var top = capturePreviewScroll();
+        var b = C.snapshotForTrace(project, pstate);
         var id = C.rollRandomChoice(project, pstate, row);
+        recordPvTrace({ kind: "roll", choiceId: id, rowTitle: row && row.title }, b);
         renderPreviewPanel({ scrollTop: top });
         if (!id) toast("굴릴 수 있는 선택지가 없습니다.");
       },
@@ -1502,6 +1531,34 @@
       });
       bp.appendChild(bm);
       shell.appendChild(bp);
+    }
+    if (_pvTraceOpen) {
+      var tp = el("div", "preview-backpack");
+      var th = el("div", "backpack-head");
+      th.appendChild(el("strong", null, "📜 규칙 기록"));
+      var thTools = el("div"); thTools.style.cssText = "display:flex;gap:6px;";
+      var tClear = el("button", "btn btn-sm", "지우기");
+      tClear.addEventListener("click", function () { _pvTraceLog.length = 0; renderPreviewPanel({ preserveScroll: true }); });
+      var tx = el("button", "btn btn-sm", "✕");
+      tx.addEventListener("click", function () { _pvTraceOpen = false; renderPreviewPanel({ preserveScroll: true }); });
+      thTools.appendChild(tClear); thTools.appendChild(tx);
+      th.appendChild(thTools);
+      tp.appendChild(th);
+      var tm = el("div", "backpack-body");
+      if (!_pvTraceLog.length) {
+        tm.appendChild(el("p", "backpack-empty", "선택·이동을 하면 무엇이 왜 바뀌었는지(자원 증감·자동 선택/해제·잠금 이유)가 여기 시간순으로 쌓입니다."));
+      } else {
+        _pvTraceLog.forEach(function (t) {
+          var item = el("div", "trace-entry");
+          var d = new Date(t.ts || 0);
+          var when = d.getHours() + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
+          item.appendChild(el("div", "trace-head", (t.icon ? C.escapeHtml(t.icon) + " " : "") + C.escapeHtml(t.head || "") + ' <span class="trace-time">' + when + "</span>"));
+          (t.changes || []).forEach(function (c) { item.appendChild(el("div", "trace-change", C.escapeHtml(c))); });
+          tm.appendChild(item);
+        });
+      }
+      tp.appendChild(tm);
+      shell.appendChild(tp);
     }
   }
   function renderPreviewPanel(opts) {

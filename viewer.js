@@ -20,10 +20,11 @@
   var muteBtn = el("button", "btn btn-sm", "🔊"); muteBtn.hidden = true; muteBtn.title = "배경 음악 켜기/끄기";
   var themeBtn = el("button", "btn btn-sm", "🌓"); themeBtn.hidden = true; themeBtn.title = "밝기 전환";
   var packBtn = el("button", "btn btn-sm", "🎒"); packBtn.title = "백팩 (내 선택)";
+  var traceBtn = el("button", "btn btn-sm", "📜"); traceBtn.title = "규칙 기록 (무엇이 왜 바뀌었나)";
   var imageBtn = el("button", "btn btn-sm", "🖼 결과 이미지");
   var codeBtn = el("button", "btn btn-sm", "빌드코드"); codeBtn.hidden = true;
   var resetBtn = el("button", "btn btn-sm", "처음으로");
-  tools.appendChild(muteBtn); tools.appendChild(themeBtn); tools.appendChild(packBtn); tools.appendChild(imageBtn); tools.appendChild(codeBtn); tools.appendChild(resetBtn);
+  tools.appendChild(muteBtn); tools.appendChild(themeBtn); tools.appendChild(packBtn); tools.appendChild(traceBtn); tools.appendChild(imageBtn); tools.appendChild(codeBtn); tools.appendChild(resetBtn);
   topbar.appendChild(titleSpan); topbar.appendChild(curBar); topbar.appendChild(tools);
   var mount = el("div");
   view.appendChild(topbar); view.appendChild(mount);
@@ -39,10 +40,23 @@
   var packMount = el("div", "backpack-body");
   var slotsBox = el("div", "backpack-slots");
   packPanel.appendChild(packHead); packPanel.appendChild(packMount); packPanel.appendChild(slotsBox);
-  root.appendChild(view); root.appendChild(audio); root.appendChild(toastEl); root.appendChild(startEl); root.appendChild(packPanel);
+  // 규칙 기록 사이드 패널
+  var tracePanel = el("aside", "backpack-panel trace-panel");
+  var traceHead = el("div", "backpack-head");
+  traceHead.appendChild(el("strong", null, "📜 규칙 기록"));
+  var traceHeadTools = el("div"); traceHeadTools.style.cssText = "display:flex;gap:6px;";
+  var traceClearBtn = el("button", "btn btn-sm", "기록 지우기");
+  var traceCloseBtn = el("button", "btn btn-sm", "✕"); traceCloseBtn.title = "닫기";
+  traceHeadTools.appendChild(traceClearBtn); traceHeadTools.appendChild(traceCloseBtn);
+  traceHead.appendChild(traceHeadTools);
+  var traceMount = el("div", "backpack-body");
+  tracePanel.appendChild(traceHead); tracePanel.appendChild(traceMount);
+  root.appendChild(view); root.appendChild(audio); root.appendChild(toastEl); root.appendChild(startEl); root.appendChild(packPanel); root.appendChild(tracePanel);
 
   var project = null, state = null, saveKey = "cyoa_save_default";
   var packOpen = false, themeInverted = false;
+  var traceOpen = false, traceLog = []; // 세션 한정(저장·빌드코드에 미포함)
+  var TRACE_MAX = 120;
 
   function toast(msg) { toastEl.textContent = msg; toastEl.classList.add("show"); clearTimeout(toastEl._t); toastEl._t = setTimeout(function () { toastEl.classList.remove("show"); }, 1800); }
 
@@ -107,7 +121,38 @@
   function togglePack(open) {
     packOpen = open == null ? !packOpen : !!open;
     packPanel.classList.toggle("open", packOpen);
-    if (packOpen) { renderBackpack(); renderSlots(); }
+    if (packOpen) { if (traceOpen) toggleTrace(false); renderBackpack(); renderSlots(); }
+  }
+
+  /* ---------- 규칙 기록(플레이 trace) ---------- */
+  // before 스냅샷은 액션 실행 전에 CY.snapshotForTrace 로 캡처해 넘긴다.
+  function recordTrace(action, before) {
+    var after = CY.snapshotForTrace(project, state);
+    var e = CY.buildTraceEntries(project, before, after, action);
+    if (!e || (!e.head && !(e.changes && e.changes.length))) return;
+    traceLog.unshift({ ts: Date.now(), icon: e.icon, head: e.head, changes: e.changes });
+    if (traceLog.length > TRACE_MAX) traceLog.length = TRACE_MAX;
+    if (traceOpen) renderTrace();
+  }
+  function renderTrace() {
+    traceMount.innerHTML = "";
+    if (!traceLog.length) {
+      traceMount.appendChild(el("p", "backpack-empty", "선택·이동을 하면 무엇이 왜 바뀌었는지(자원 증감·자동 선택/해제·잠금 이유)가 여기에 시간순으로 쌓입니다."));
+      return;
+    }
+    traceLog.forEach(function (t) {
+      var item = el("div", "trace-entry");
+      var d = new Date(t.ts || 0);
+      var when = d.getHours() + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
+      item.appendChild(el("div", "trace-head", (t.icon ? CY.escapeHtml(t.icon) + " " : "") + CY.escapeHtml(t.head || "") + ' <span class="trace-time">' + when + "</span>"));
+      (t.changes || []).forEach(function (c) { item.appendChild(el("div", "trace-change", CY.escapeHtml(c))); });
+      traceMount.appendChild(item);
+    });
+  }
+  function toggleTrace(open) {
+    traceOpen = open == null ? !traceOpen : !!open;
+    tracePanel.classList.toggle("open", traceOpen);
+    if (traceOpen) { if (packOpen) togglePack(false); renderTrace(); }
   }
 
   /* ---------- 밝기(명도 반전) 토글 ---------- */
@@ -164,12 +209,15 @@
     renderTopbar();
     CY.renderStage(project, state, mount, {
       mode: "play",
-      onToggle: function (id) { CY.toggleChoice(project, state, id); persist(); render(); },
-      onCount: function (id, delta) { CY.changeCount(project, state, id, delta); persist(); render(); },
-      onNavigate: function (link) { CY.navigate(project, state, link); persist(); render(true); window.scrollTo(0, 0); },
-      onBack: function () { CY.goBack(state); persist(); render(true); window.scrollTo(0, 0); },
+      onToggle: function (id) { var b = CY.snapshotForTrace(project, state); CY.toggleChoice(project, state, id); recordTrace({ kind: "select", choiceId: id }, b); persist(); render(); },
+      onCount: function (id, delta) { var b = CY.snapshotForTrace(project, state); CY.changeCount(project, state, id, delta); recordTrace({ kind: "count", choiceId: id, delta: delta }, b); persist(); render(); },
+      onLocked: function (id, reasons) { recordTrace({ kind: "locked", choiceId: id, reasons: reasons }, CY.snapshotForTrace(project, state)); if (!traceOpen) toast("이 선택지는 지금 고를 수 없어요 — 📜 규칙 기록에서 이유를 확인하세요."); },
+      onNavigate: function (link) { var b = CY.snapshotForTrace(project, state); var from = state.currentPageId; CY.navigate(project, state, link); recordTrace({ kind: "navigate", to: state.currentPageId, from: from }, b); persist(); render(true); window.scrollTo(0, 0); },
+      onBack: function () { var b = CY.snapshotForTrace(project, state); CY.goBack(state); recordTrace({ kind: "back", to: state.currentPageId }, b); persist(); render(true); window.scrollTo(0, 0); },
       onRoll: function (row) {
+        var b = CY.snapshotForTrace(project, state);
         var id = CY.rollRandomChoice(project, state, row);
+        recordTrace({ kind: "roll", choiceId: id, rowTitle: row && row.title }, b);
         persist(); render();
         if (!id) toast("굴릴 수 있는 선택지가 없습니다.");
       },
@@ -177,6 +225,7 @@
     });
     if (themeInverted) applyCurrentTheme(); // renderStage 가 제작자 테마를 다시 적용하므로 반전 유지
     renderBackpack();
+    if (traceOpen) renderTrace();
     updateAudio();
   }
 
@@ -205,7 +254,7 @@
   function wireButtons() {
     resetBtn.onclick = function () {
       if (!confirm("선택과 진행 상황을 모두 초기화할까요?")) return;
-      state = CY.newState(project); persist(); render(true); window.scrollTo(0, 0);
+      state = CY.newState(project); traceLog.length = 0; if (traceOpen) renderTrace(); persist(); render(true); window.scrollTo(0, 0);
     };
     muteBtn.onclick = function () {
       bgmMuted = !bgmMuted;
@@ -220,6 +269,9 @@
     };
     packBtn.onclick = function () { togglePack(); };
     packClose.onclick = function () { togglePack(false); };
+    traceBtn.onclick = function () { toggleTrace(); };
+    traceCloseBtn.onclick = function () { toggleTrace(false); };
+    traceClearBtn.onclick = function () { traceLog.length = 0; renderTrace(); };
     imageBtn.onclick = function () {
       imageBtn.disabled = true; var prev = imageBtn.textContent; imageBtn.textContent = "이미지 생성 중…";
       CY.saveResultImage(project, state, (project.meta && project.meta.title) || "cyoa").then(function (type) {
